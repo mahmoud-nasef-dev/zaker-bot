@@ -1,0 +1,7 @@
+google-generativeai
+python-dotenv
+python-telegram-bot
+pypdf
+reportlab
+arabic-reshaper
+python-bidi

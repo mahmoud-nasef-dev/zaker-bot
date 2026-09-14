@@ -1,0 +1,6 @@
+.env
+__pycache__/
+*.pyc
+users.db
+temp_*.pdf
+report_*.pdf
