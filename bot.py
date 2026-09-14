@@ -18,12 +18,15 @@ from database import (
     check_limit, get_user_plan, set_user_plan, get_stats,
     add_points, get_user_points, claim_daily_gift,
     get_daily_status, get_leaderboard, get_level_info,
-    POINTS_REWARDS, LEVELS
+       POINTS_REWARDS, LEVELS,
+    get_all_users, get_user_details, get_detailed_stats,
+    ban_user, unban_user, get_all_user_ids
 )
 from keyboards import (
     main_menu, pdf_menu, quiz_menu, explain_menu,
     translate_menu, summarize_menu, account_menu,
-    admin_menu, back_button, points_menu, analysis_options_menu
+        admin_menu, back_button, points_menu, analysis_options_menu,
+    admin_panel_menu, admin_user_actions
 )
 
 # ===== الإعدادات =====
@@ -220,10 +223,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"*اختار من الأزرار تحت* 👇"
     )
 
+    is_admin = user.id in ADMIN_IDS
+
     await update.message.reply_text(
         welcome,
         parse_mode="Markdown",
-        reply_markup=main_menu()
+        reply_markup=main_menu(is_admin=is_admin)
     )
 
 
@@ -526,7 +531,58 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "about":
         await query.edit_message_text(ABOUT_MESSAGE, parse_mode="Markdown")
+            # ===== أزرار لوحة التحكم (Admin) =====
+    if data == "admin_stats" and user.id in ADMIN_IDS:
+        stats = get_detailed_stats()
+        
+        text = (
+            f"📊 *إحصائيات البوت*\n\n"
+            f"👥 *إجمالي المستخدمين:* {stats['total_users']}\n"
+            f"🆕 *نشطين النهاردة:* {stats['active_today']}\n"
+            f"⭐ *Premium:* {stats['premium_users']}\n"
+            f"👑 *Admins:* {stats['admin_users']}\n"
+            f"📨 *إجمالي الطلبات:* {stats['total_requests']}\n"
+            f"💎 *إجمالي النقاط:* {stats['total_points']}\n\n"
+        )
+        
+        if stats["top_users"]:
+            text += "🏆 *أعلى 5 طلاب:*\n"
+            for i, (name, points) in enumerate(stats["top_users"]):
+                text += f"{i+1}. {name or 'طالب'} — {points} 💎\n"
+        
+        await query.edit_message_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=admin_panel_menu()
+        )
         return
+
+    if data == "admin_users" and user.id in ADMIN_IDS:
+        users = get_all_users(20)
+        
+        text = "👥 *آخر 20 مستخدم:*\n\n"
+        for user_id, first_name, username, points, level, plan, last_used in users:
+            plan_emoji = {"free": "🆓", "premium": "⭐", "admin": "👑", "banned": "🚫"}.get(plan, "🆓")
+            text += f"{plan_emoji} *{first_name or 'مستخدم'}* — {points} 💎\n"
+            text += f"   🆔 `{user_id}`\n\n"
+        
+        await query.edit_message_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=admin_panel_menu()
+        )
+        return
+
+    if data == "admin_broadcast" and user.id in ADMIN_IDS:
+        await query.edit_message_text(
+            "📢 *بث رسالة*\n\n"
+            "ابعتلي الرسالة اللي عايز تبعتها لكل المستخدمين.\n\n"
+            "_ملاحظة: الميزة دي قريب إن شاء الله_ 🚧",
+            parse_mode="Markdown",
+            reply_markup=admin_panel_menu()
+        )
+        return
+        
 
 
 # ===== معالجة اختيار نوع التحليل =====
@@ -741,8 +797,16 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         await invite_command(update, context)
         return
 
-    await handle_message(update, context)
+    if text == "🎛️ لوحة التحكم":
+        if user.id in ADMIN_IDS:
+            await update.message.reply_text(
+                "🎛️ *لوحة التحكم*\n\nاختار من الأزرار:",
+                parse_mode="Markdown",
+                reply_markup=admin_panel_menu()
+            )
+        return
 
+    await handle_message(update, context)
 
 # ===== تشغيل =====
 def main():

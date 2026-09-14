@@ -5,8 +5,8 @@ from telegram import (
 
 
 # ===== القائمة الرئيسية (Reply Keyboard) =====
-def main_menu():
-    """القائمة الأساسية اللي بتفضل ظاهرة تحت"""
+def main_menu(is_admin=False):
+    """القائمة الأساسية - بتفرق بين Admin والمستخدم العادي"""
     keyboard = [
         [KeyboardButton("📄 تحليل PDF"), KeyboardButton("📸 صورة")],
         [KeyboardButton("🎯 كويز"), KeyboardButton("📚 شرح")],
@@ -14,6 +14,11 @@ def main_menu():
         [KeyboardButton("💎 نقاطي"), KeyboardButton("🎁 هدية يومية")],
         [KeyboardButton("🏆 المتصدرين"), KeyboardButton("👥 دعوة أصدقاء")],
     ]
+
+    # لو Admin، نضيف زر لوحة التحكم
+    if is_admin:
+        keyboard.append([KeyboardButton("🎛️ لوحة التحكم")])
+
     return ReplyKeyboardMarkup(
         keyboard,
         resize_keyboard=True,
@@ -133,5 +138,26 @@ def admin_menu():
         [InlineKeyboardButton("👥 المستخدمين", callback_data="admin_users")],
         [InlineKeyboardButton("📢 بث رسالة", callback_data="admin_broadcast")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def admin_panel_menu():
+    """لوحة تحكم الأدمن"""
+    keyboard = [
+        [InlineKeyboardButton("📊 الإحصائيات", callback_data="admin_stats")],
+        [InlineKeyboardButton("👥 المستخدمين", callback_data="admin_users")],
+        [InlineKeyboardButton("📢 بث رسالة", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def admin_user_actions(user_id):
+    """أزرار التحكم في مستخدم معين"""
+    keyboard = [
+        [InlineKeyboardButton("⭐ ترقية لـ Premium", callback_data=f"admin_upgrade_{user_id}")],
+        [InlineKeyboardButton("💎 إضافة نقاط", callback_data=f"admin_addpoints_{user_id}")],
+        [InlineKeyboardButton("🚫 حظر", callback_data=f"admin_ban_{user_id}")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="admin_users")],
     ]
     return InlineKeyboardMarkup(keyboard)

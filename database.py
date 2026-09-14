@@ -377,3 +377,103 @@ def get_stats():
         "total_requests": total_requests,
         "total_points": total_points,
     }
+
+def get_all_users(limit=20):
+    """بيرجع آخر 20 مستخدم"""
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT user_id, first_name, username, points, level, plan, last_used
+        FROM users
+        ORDER BY last_used DESC
+        LIMIT ?
+    """, (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+
+def get_user_details(user_id):
+    """بيرجع تفاصيل مستخدم معين"""
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT user_id, first_name, username, joined_date, last_used,
+               total_requests, points, level, plan, daily_streak, invited_count
+        FROM users WHERE user_id = ?
+    """, (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row
+
+
+def get_detailed_stats():
+    """إحصائيات مفصلة"""
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total_users = cursor.fetchone()[0]
+
+    today = str(date.today())
+    cursor.execute("SELECT COUNT(*) FROM users WHERE last_used = ?", (today,))
+    active_today = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM users WHERE plan = 'premium'")
+    premium_users = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM users WHERE plan = 'admin'")
+    admin_users = cursor.fetchone()[0]
+
+    cursor.execute("SELECT SUM(total_requests) FROM users")
+    total_requests = cursor.fetchone()[0] or 0
+
+    cursor.execute("SELECT SUM(points) FROM users")
+    total_points = cursor.fetchone()[0] or 0
+
+    # أعلى 5 مستخدمين
+    cursor.execute("""
+        SELECT first_name, points FROM users
+        ORDER BY points DESC LIMIT 5
+    """)
+    top_users = cursor.fetchall()
+
+    conn.close()
+
+    return {
+        "total_users": total_users,
+        "active_today": active_today,
+        "premium_users": premium_users,
+        "admin_users": admin_users,
+        "total_requests": total_requests,
+        "total_points": total_points,
+        "top_users": top_users,
+    }
+
+
+def ban_user(user_id):
+    """حظر مستخدم (بيغير الخطة لـ banned)"""
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET plan = 'banned' WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def unban_user(user_id):
+    """فك الحظر"""
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET plan = 'free' WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_all_user_ids():
+    """بيرجع كل الـ user_ids (للبث)"""
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE plan != 'banned'")
+    rows = cursor.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
