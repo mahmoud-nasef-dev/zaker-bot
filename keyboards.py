@@ -14,6 +14,11 @@ def main_menu():
         [KeyboardButton("💎 نقاطي"), KeyboardButton("🎁 هدية يومية")],
         [KeyboardButton("🏆 المتصدرين"), KeyboardButton("👥 دعوة أصدقاء")],
     ]
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,
+        input_field_placeholder="اختار من الأزرار..."
+    )
 
 # ===== أزرار Inline =====
 def back_button():
