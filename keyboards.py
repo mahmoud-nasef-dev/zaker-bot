@@ -11,14 +11,9 @@ def main_menu():
         [KeyboardButton("📄 تحليل PDF"), KeyboardButton("📸 صورة")],
         [KeyboardButton("🎯 كويز"), KeyboardButton("📚 شرح")],
         [KeyboardButton("🌍 ترجمة"), KeyboardButton("📝 تلخيص")],
-        [KeyboardButton("🏆 حسابي"), KeyboardButton("🎁 هدية يومية")],
+        [KeyboardButton("💎 نقاطي"), KeyboardButton("🎁 هدية يومية")],
+        [KeyboardButton("🏆 المتصدرين"), KeyboardButton("👥 دعوة أصدقاء")],
     ]
-    return ReplyKeyboardMarkup(
-        keyboard,
-        resize_keyboard=True,
-        input_field_placeholder="اختار من الأزرار..."
-    )
-
 
 # ===== أزرار Inline =====
 def back_button():
@@ -111,6 +106,27 @@ def analysis_options_menu():
         [InlineKeyboardButton("🎯 كويز تفاعلي", callback_data="analysis_quiz")],
         [InlineKeyboardButton("💡 أمثلة عملية", callback_data="analysis_examples")],
         [InlineKeyboardButton("🧮 تمارين ومسائل", callback_data="analysis_problems")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+def points_menu():
+    """قائمة النقاط"""
+    keyboard = [
+        [InlineKeyboardButton("🎁 هدية يومية", callback_data="claim_daily")],
+        [InlineKeyboardButton("🏆 المتصدرين", callback_data="show_leaderboard")],
+        [InlineKeyboardButton("👥 دعوة صديق", callback_data="invite_friend")],
+        [InlineKeyboardButton("📊 إحصائياتي", callback_data="my_stats")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def admin_menu():
+    """قائمة الأدمن"""
+    keyboard = [
+        [InlineKeyboardButton("📊 الإحصائيات", callback_data="admin_stats")],
+        [InlineKeyboardButton("👥 المستخدمين", callback_data="admin_users")],
+        [InlineKeyboardButton("📢 بث رسالة", callback_data="admin_broadcast")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
     ]
     return InlineKeyboardMarkup(keyboard)

@@ -11,11 +11,14 @@ from telegram.request import HTTPXRequest
 
 from config import (
     WELCOME_MESSAGE, ABOUT_MESSAGE, BOT_NAME, BOT_VERSION,
-    DEVELOPER_NAME, DEVELOPER_USERNAME, ADMIN_IDS
+    DEVELOPER_NAME, DEVELOPER_USERNAME, ADMIN_IDS, BOT_USERNAME
 )
 from database import (
     init_db, get_or_create_user, increment_usage,
-    check_limit, get_user_plan, get_stats
+    check_limit, get_user_plan, set_user_plan, get_stats,
+    add_points, get_user_points, claim_daily_gift,
+    get_daily_status, get_leaderboard, get_level_info,
+    POINTS_REWARDS, LEVELS
 )
 from keyboards import (
     main_menu, pdf_menu, quiz_menu, explain_menu,
@@ -203,6 +206,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from database import get_user_plan
     plan = get_user_plan(user.id)
     allowed, remaining = check_limit(user.id)
+    points, level = get_user_points(user.id)
+    level_info = get_level_info(points)
 
     plan_names = {
         "free": "🆓 مجاني",
@@ -213,8 +218,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome = (
         f"أهلاً *{user.first_name}*! 👋\n\n"
         f"🎓 إنت في *ذاكر* - مساعدك الدراسي\n\n"
-        f"👤 حسابك: {plan_names.get(plan, 'مجاني')}\n"
-        f"📊 متبقي اليوم: {remaining} استخدام\n\n"
+        f"💎 *نقاطك:* {points}\n"
+        f"🏆 *مستواك:* {level_info['name']}\n"
+        f"👤 *حسابك:* {plan_names.get(plan, 'مجاني')}\n"
+        f"📊 *متبقي اليوم:* {remaining} استخدام\n\n"
         f"━━━━━━━━━━━━━━━\n\n"
         f"*اختار من الأزرار تحت* 👇"
     )
@@ -596,7 +603,7 @@ async def handle_pdf_options(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.effective_chat.send_message(full_text[4000:])
 
         # نضيف نقاط
-        increment_usage(user.id)
+        increment_usage(user.id, POINTS_REWARDS["pdf_analysis"])
 
     except Exception as e:
         await query.edit_message_text(f"❌ حصل خطأ: {str(e)}")
@@ -629,7 +636,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 متبقي: {remaining - 1} استخدام"
         )
 
-        increment_usage(user.id)
+        increment_usage(user.id, POINTS_REWARDS["text_analysis"])
         await waiting.edit_text(result)
 
     except Exception as e:
@@ -706,11 +713,24 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    # ===== هدية يومية =====
+        # ===== هدية يومية =====
     if text == "🎁 هدية يومية":
-        await update.message.reply_text(
-            "🎁 *الهدية اليومية*\n\n_قريب إن شاء الله_ 🚧"
-        )
+        await daily_command(update, context)
+        return
+
+    # ===== نقاطي =====
+    if text == "💎 نقاطي":
+        await points_command(update, context)
+        return
+
+    # ===== المتصدرين =====
+    if text == "🏆 المتصدرين":
+        await leaderboard_command(update, context)
+        return
+
+    # ===== دعوة أصدقاء =====
+    if text == "👥 دعوة أصدقاء":
+        await invite_command(update, context)
         return
 
     # ===== أي حاجة تانية =====
@@ -733,6 +753,10 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("about", about_command))
     app.add_handler(CommandHandler("myplan", myplan_command))
+    app.add_handler(CommandHandler("points", points_command))
+    app.add_handler(CommandHandler("daily", daily_command))
+    app.add_handler(CommandHandler("leaderboard", leaderboard_command))
+    app.add_handler(CommandHandler("invite", invite_command))
     app.add_handler(CallbackQueryHandler(handle_pdf_options))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
@@ -742,7 +766,133 @@ def main():
     print(f"👨‍💻 المطور: {DEVELOPER_NAME}")
     print("اضغط Ctrl+C للإيقاف.")
     app.run_polling()
+# ===== دوال النقاط والمستويات =====
+def format_level_bar(points, level_info):
+    """بيرسم شريط تقدم المستوى"""
+    min_pts = level_info["min_points"]
+    max_pts = level_info["max_points"]
+    
+    if max_pts == 999999:
+        return "🎉 أقصى مستوى!"
+    
+    progress = points - min_pts
+    total = max_pts - min_pts
+    percent = int((progress / total) * 100) if total > 0 else 0
+    
+    filled = int(percent / 10)
+    bar = "█" * filled + "░" * (10 - filled)
+    
+    return f"{bar} {percent}%"
 
+
+async def points_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /points"""
+    user = update.effective_user
+    get_or_create_user(user.id, user.username, user.first_name)
+    
+    points, level = get_user_points(user.id)
+    level_info = get_level_info(points)
+    bar = format_level_bar(points, level_info)
+    
+    text = (
+        f"💎 *نقاطك:* {points}\n"
+        f"🏆 *مستواك:* {level_info['name']}\n\n"
+        f"📊 *التقدم للمستوى الجاي:*\n"
+        f"`{bar}`\n\n"
+        f"🎯 عايز نقاط أكتر؟\n"
+        f"• استخدم البوت\n"
+        f"• استلم هديتك اليومية\n"
+        f"• ادعي أصحابك"
+    )
+    
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=points_menu()
+    )
+
+
+async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /daily"""
+    user = update.effective_user
+    get_or_create_user(user.id, user.username, user.first_name)
+    
+    result = claim_daily_gift(user.id)
+    
+    if not result["success"]:
+        await update.message.reply_text(
+            f"⚠️ {result['message']}\n\n"
+            f"🔔 متنساش ترجع تاني!",
+        )
+        return
+    
+    text = (
+        f"🎉 *مبروك!*\n\n"
+        f"💎 كسبت: *{result['points']}* نقطة\n"
+    )
+    
+    if result["bonus"] > 0:
+        text += f"🎁 بونص السلسلة: *+{result['bonus']}* نقطة\n"
+    
+    text += (
+        f"\n🔥 *سلسلتك:* {result['streak']} يوم\n"
+        f"📊 *إجمالي نقاطك:* {result['new_points']}\n"
+        f"🏆 *مستواك:* {result['level']['name']}"
+    )
+    
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /leaderboard"""
+    top = get_leaderboard(10)
+    
+    if not top:
+        await update.message.reply_text("📊 لسه مفيش متصدرين!")
+        return
+    
+    text = "🏆 *أعلى 10 طلاب:*\n\n"
+    
+    medals = ["🥇", "🥈", "🥉"]
+    
+    for i, (user_id, first_name, username, points, level) in enumerate(top):
+        if i < 3:
+            emoji = medals[i]
+        else:
+            emoji = f"{i+1}."
+        
+        level_info = get_level_info(points)
+        name = first_name or "طالب"
+        
+        text += f"{emoji} *{name}* — {points} 💎\n"
+        text += f"   {level_info['name']}\n\n"
+    
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def invite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /invite"""
+    user = update.effective_user
+    get_or_create_user(user.id, user.username, user.first_name)
+    
+    bot_username = BOT_USERNAME.replace("@", "")
+    invite_link = f"https://t.me/{bot_username}?start=invite_{user.id}"
+    
+    text = (
+        f"👥 *دعوة الأصدقاء*\n\n"
+        f"كل صاحب يدخل من لينكك = *20 نقطة* 💎\n\n"
+        f"🔗 *لينكك الخاص:*\n"
+        f"`{invite_link}`\n\n"
+        f"📤 انسخ اللينك وابعته لأصحابك!"
+    )
+    
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📤 مشاركة", url=f"https://t.me/share/url?url={invite_link}")
+        ]])
+    )
 
 if __name__ == "__main__":
     main()
