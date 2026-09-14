@@ -23,35 +23,8 @@ from database import (
 from keyboards import (
     main_menu, pdf_menu, quiz_menu, explain_menu,
     translate_menu, summarize_menu, account_menu,
-    admin_menu, back_button
+    admin_menu, back_button, points_menu, analysis_options_menu
 )
-from pdf_generator import create_pdf_report
-def clean_text(text):
-    """بتنضف النص من علامات Markdown"""
-    if not text:
-        return ""
-    
-    # شيل ### (عناوين)
-    text = text.replace("###", "▪")
-    text = text.replace("##", "◈")
-    text = text.replace("#", "•")
-    
-    # شيل ** (bold)
-    text = text.replace("**", "")
-    
-    # شيل --- (خطوط فاصلة)
-    text = text.replace("---", "━━━━━━━━━━━━━")
-    
-    # شيل * في بداية الكلام
-    lines = text.split("\n")
-    cleaned_lines = []
-    for line in lines:
-        line = line.strip()
-        if line.startswith("*") and not line.startswith("**"):
-            line = "• " + line[1:].strip()
-        cleaned_lines.append(line)
-    
-    return "\n".join(cleaned_lines)
 
 # ===== الإعدادات =====
 load_dotenv()
@@ -102,11 +75,10 @@ def analyze_pdf_content(text, analysis_type="summary"):
 
 اعملي **شرح تفصيلي بالعربي** للمحتوى كله، بشرط:
 
-1. اشرح **كل نقطة** بالتفصيل الممل
+1. اشرح **كل نقطة** بالتفصيل
 2. ادي **أمثلة** على كل نقطة
 3. اشرح **المصطلحات** جوا السياق
 4. نظّم الشرح في **أجزاء صغيرة** (كل جزء 3-4 أسطر)
-5. اكتب بالعربي السهل المفهوم
 
 المحتوى:
 {text}
@@ -116,7 +88,7 @@ def analyze_pdf_content(text, analysis_type="summary"):
 
 اعملي **قائمة المصطلحات المهمة** بالشكل ده:
 
-🔤 **المصطلح** (النطق)
+🔤 **المصطلح**
 📖 المعنى بالعربي
 💡 مثال
 
@@ -172,38 +144,60 @@ def analyze_pdf_content(text, analysis_type="summary"):
     prompt = prompts.get(analysis_type, prompts["summary"])
     response = model.generate_content(prompt)
     return response.text
-    response = model.generate_content(prompt)
-    return response.text
 
 
-# ===== لوحة التحكم (للأدمن) =====
-def admin_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("📊 الإحصائيات", callback_data="admin_stats")],
-        [InlineKeyboardButton("📢 بث رسالة", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+def clean_text(text):
+    """بتنضف النص من علامات Markdown"""
+    if not text:
+        return ""
+
+    # شيل ### (عناوين)
+    text = text.replace("###", "▪")
+    text = text.replace("##", "◈")
+    text = text.replace("#", "•")
+
+    # شيل ** (bold)
+    text = text.replace("**", "")
+
+    # شيل --- (خطوط فاصلة)
+    text = text.replace("---", "━━━━━━━━━━━━━")
+
+    # شيل * في بداية الكلام
+    lines = text.split("\n")
+    cleaned_lines = []
+    for line in lines:
+        line = line.strip()
+        if line.startswith("*") and not line.startswith("**"):
+            line = "• " + line[1:].strip()
+        cleaned_lines.append(line)
+
+    return "\n".join(cleaned_lines)
 
 
-# ===== أزرار المستخدم =====
-def main_keyboard():
-    keyboard = [
-        [InlineKeyboardButton("📄 ارفع PDF", callback_data="upload_pdf")],
-        [InlineKeyboardButton("🌍 ترجمة", callback_data="translate"),
-         InlineKeyboardButton("📚 تلخيص", callback_data="summarize")],
-        [InlineKeyboardButton("ℹ️ عن البوت", callback_data="about")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
+# ===== دوال النقاط =====
+def format_level_bar(points, level_info):
+    """بيرسم شريط تقدم المستوى"""
+    min_pts = level_info["min_points"]
+    max_pts = level_info["max_points"]
+
+    if max_pts == 999999:
+        return "🎉 أقصى مستوى!"
+
+    progress = points - min_pts
+    total = max_pts - min_pts
+    percent = int((progress / total) * 100) if total > 0 else 0
+
+    filled = int(percent / 10)
+    bar = "█" * filled + "░" * (10 - filled)
+
+    return f"{bar} {percent}%"
 
 
 # ===== الأوامر =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    user_data = get_or_create_user(user.id, user.username, user.first_name)
+    get_or_create_user(user.id, user.username, user.first_name)
 
-    # جيب بيانات المستخدم
-    from database import get_user_plan
     plan = get_user_plan(user.id)
     allowed, remaining = check_limit(user.id)
     points, level = get_user_points(user.id)
@@ -226,28 +220,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"*اختار من الأزرار تحت* 👇"
     )
 
-    # لو الأدمن، ضيف زرار لوحة التحكم
-    if user.id in ADMIN_IDS:
-        await update.message.reply_text(
-            welcome,
-            parse_mode="Markdown",
-            reply_markup=main_menu()
-        )
-    else:
-        await update.message.reply_text(
-            welcome,
-            parse_mode="Markdown",
-            reply_markup=main_menu()
-        )
+    await update.message.reply_text(
+        welcome,
+        parse_mode="Markdown",
+        reply_markup=main_menu()
+    )
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "📚 *الأوامر المتاحة:*\n\n"
         "/start - البداية\n"
         "/help - مساعدة\n"
-        "/about - عن البوت\n"
-        "/myplan - خطتك الحالية\n\n"
-        "أو ابعت أي نص مباشرة للترجمة والتلخيص."
+        "/about - عن ذاكر\n"
+        "/myplan - خطتك الحالية\n"
+        "/points - نقاطك ومستواك\n"
+        "/daily - هدية يومية\n"
+        "/leaderboard - المتصدرين\n"
+        "/invite - دعوة أصدقاء"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -259,14 +249,13 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def myplan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     plan = get_user_plan(user.id)
+    allowed, remaining = check_limit(user.id)
 
     plan_names = {
         "free": "🆓 مجاني",
         "premium": "⭐ مميز",
         "admin": "👑 أدمن",
     }
-
-    allowed, remaining = check_limit(user.id)
 
     text = (
         f"👤 *حسابك:* {plan_names.get(plan, 'مجاني')}\n"
@@ -279,7 +268,107 @@ async def myplan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
-# ===== معالجة الأزرار =====
+async def points_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /points"""
+    user = update.effective_user
+    get_or_create_user(user.id, user.username, user.first_name)
+
+    points, level = get_user_points(user.id)
+    level_info = get_level_info(points)
+    bar = format_level_bar(points, level_info)
+
+    text = (
+        f"💎 *نقاطك:* {points}\n"
+        f"🏆 *مستواك:* {level_info['name']}\n\n"
+        f"📊 *التقدم للمستوى الجاي:*\n"
+        f"`{bar}`\n\n"
+        f"🎯 عايز نقاط أكتر؟\n"
+        f"• استخدم البوت\n"
+        f"• استلم هديتك اليومية\n"
+        f"• ادعي أصحابك"
+    )
+
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=points_menu()
+    )
+
+
+async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /daily"""
+    user = update.effective_user
+    get_or_create_user(user.id, user.username, user.first_name)
+
+    result = claim_daily_gift(user.id)
+
+    if not result["success"]:
+        await update.message.reply_text(
+            f"⚠️ {result['message']}\n\n🔔 متنساش ترجع تاني!",
+        )
+        return
+
+    text = f"🎉 *مبروك!*\n\n💎 كسبت: *{result['points']}* نقطة\n"
+
+    if result["bonus"] > 0:
+        text += f"🎁 بونص السلسلة: *+{result['bonus']}* نقطة\n"
+
+    text += (
+        f"\n🔥 *سلسلتك:* {result['streak']} يوم\n"
+        f"📊 *إجمالي نقاطك:* {result['new_points']}\n"
+        f"🏆 *مستواك:* {result['level']['name']}"
+    )
+
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /leaderboard"""
+    top = get_leaderboard(10)
+
+    if not top:
+        await update.message.reply_text("📊 لسه مفيش متصدرين!")
+        return
+
+    text = "🏆 *أعلى 10 طلاب:*\n\n"
+    medals = ["🥇", "🥈", "🥉"]
+
+    for i, (user_id, first_name, username, points, level) in enumerate(top):
+        emoji = medals[i] if i < 3 else f"{i+1}."
+        level_info = get_level_info(points)
+        name = first_name or "طالب"
+        text += f"{emoji} *{name}* — {points} 💎\n"
+        text += f"   {level_info['name']}\n\n"
+
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def invite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /invite"""
+    user = update.effective_user
+    get_or_create_user(user.id, user.username, user.first_name)
+
+    bot_username = BOT_USERNAME.replace("@", "")
+    invite_link = f"https://t.me/{bot_username}?start=invite_{user.id}"
+
+    text = (
+        f"👥 *دعوة الأصدقاء*\n\n"
+        f"كل صاحب يدخل من لينكك = *20 نقطة* 💎\n\n"
+        f"🔗 *لينكك الخاص:*\n"
+        f"`{invite_link}`\n\n"
+        f"📤 انسخ اللينك وابعته لأصحابك!"
+    )
+
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("📤 مشاركة", url=f"https://t.me/share/url?url={invite_link}")
+        ]])
+    )
+
+
+# ===== معالجة الأزرار Inline =====
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالجة ضغطات الأزرار Inline"""
     query = update.callback_query
@@ -288,7 +377,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     user = query.from_user
 
-    # ===== أزرار الرجوع =====
     if data == "back_home":
         await query.edit_message_text(
             "🏠 *القائمة الرئيسية*\n\nاختار من الأزرار تحت 👇",
@@ -296,115 +384,76 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ===== أزرار PDF =====
     if data == "upload_pdf":
         await query.edit_message_text(
-            "📄 *ارفع ملف PDF دلوقتي*\n\n"
-            "ابعتلي الملف وأنا هحلله وهطلعلك:\n"
-            "• ملخص بالعربي\n"
-            "• مصطلحات مهمة\n"
-            "• أسئلة للمراجعة\n\n"
-            "_ملاحظة: الحد الأقصى 20 ميجا_",
+            "📄 *ارفع ملف PDF دلوقتي*\n\nابعتلي الملف وأنا هحلله.",
             parse_mode="Markdown"
         )
         return
 
     if data == "upload_image":
         await query.edit_message_text(
-            "📸 *ارفع صورة*\n\n"
-            "ابعتلي صورة الكتاب أو السبورة وأنا هحللها.\n\n"
-            "_الميزة دي قريب إن شاء الله_ 🚧"
+            "📸 *ارفع صورة*\n\n_قريب إن شاء الله_ 🚧"
         )
         return
 
-    # ===== أزرار الكويز =====
+    # أزرار الكويز
     if data == "quiz_from_pdf":
         await query.edit_message_text(
-            "🎯 *كويز من PDF*\n\n"
-            "ارفع ملف PDF الأول، وبعدها هنعملك كويز عليه.\n\n"
-            "_قريب إن شاء الله_ 🚧"
+            "🎯 *كويز من PDF*\n\nارفع ملف PDF الأول."
         )
         return
 
     if data == "quiz_random":
-        await query.edit_message_text(
-            "🎲 *كويز عشوائي*\n\n"
-            "جاري التجهيز... 🚧"
-        )
+        await query.edit_message_text("🎲 *كويز عشوائي*\n\n_قريب إن شاء الله_ 🚧")
         return
 
     if data == "quiz_subject":
-        await query.edit_message_text(
-            "📚 *كويز من مادة*\n\n"
-            "اختار المادة اللي عايز تختبر فيها.\n\n"
-            "_قريب إن شاء الله_ 🚧"
-        )
+        await query.edit_message_text("📚 *كويز من مادة*\n\n_قريب إن شاء الله_ 🚧")
         return
 
     if data == "quiz_daily":
-        await query.edit_message_text(
-            "🎁 *الكويز اليومي*\n\n"
-            "تعال كل يوم وخد سؤال جديد!\n\n"
-            "_قريب إن شاء الله_ 🚧"
-        )
+        await query.edit_message_text("🎁 *الكويز اليومي*\n\n_قريب إن شاء الله_ 🚧")
         return
 
-    # ===== أزرار الشرح =====
+    # أزرار الشرح
     if data == "explain_concept":
-        await query.edit_message_text(
-            "💡 *اشرحلي مفهوم*\n\n"
-            "ابعتلي اسم المفهوم وهشرحلك إياه."
-        )
+        await query.edit_message_text("💡 *اشرحلي مفهوم*\n\nابعتلي اسم المفهوم.")
         return
 
     if data == "explain_term":
-        await query.edit_message_text(
-            "🔤 *اشرحلي مصطلح*\n\n"
-            "ابعتلي المصطلح وهشرحلك معناه."
-        )
+        await query.edit_message_text("🔤 *اشرحلي مصطلح*\n\nابعتلي المصطلح.")
         return
 
     if data == "solve_problem":
-        await query.edit_message_text(
-            "🧮 *حل مسألة*\n\n"
-            "ابعتلي المسألة وهحلها خطوة بخطوة."
-        )
+        await query.edit_message_text("🧮 *حل مسألة*\n\nابعتلي المسألة.")
         return
 
-    # ===== أزرار الترجمة =====
+    # أزرار الترجمة
     if data == "translate_text":
-        await query.edit_message_text(
-            "🌍 *ترجمة نص*\n\n"
-            "ابعتلي النص اللي عايز تترجمه."
-        )
+        await query.edit_message_text("🌍 *ترجمة نص*\n\nابعتلي النص.")
         return
 
     if data == "translate_file":
-        await query.edit_message_text(
-            "📄 *ترجمة ملف*\n\n"
-            "ارفع الملف وهترجمهولك."
-        )
+        await query.edit_message_text("📄 *ترجمة ملف*\n\nارفع الملف.")
         return
 
-    # ===== أزرار التلخيص =====
+    # أزرار التلخيص
     if data == "summarize_text":
-        await query.edit_message_text(
-            "📝 *تلخيص نص*\n\n"
-            "ابعتلي النص اللي عايز تلخصه."
-        )
+        await query.edit_message_text("📝 *تلخيص نص*\n\nابعتلي النص.")
         return
 
     if data == "summarize_file":
-        await query.edit_message_text(
-            "📄 *تلخيص ملف*\n\n"
-            "ارفع الملف وهلخصهولك."
-        )
+        await query.edit_message_text("📄 *تلخيص ملف*\n\nارفع الملف.")
         return
 
-    # ===== أزرار الحساب =====
+    # أزرار الحساب
     if data == "account_info":
         plan = get_user_plan(user.id)
         allowed, remaining = check_limit(user.id)
+        points, level = get_user_points(user.id)
+        level_info = get_level_info(points)
+
         plan_names = {
             "free": "🆓 مجاني",
             "premium": "⭐ مميز",
@@ -416,6 +465,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📛 الاسم: {user.first_name}\n"
             f"🆔 الـ ID: `{user.id}`\n"
             f"📊 الحساب: {plan_names.get(plan, 'مجاني')}\n"
+            f"💎 النقاط: {points}\n"
+            f"🏆 المستوى: {level_info['name']}\n"
             f"✅ متبقي اليوم: {remaining} استخدام\n"
         )
 
@@ -423,17 +474,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "account_stats":
-        await query.edit_message_text(
-            "📊 *إحصائياتك*\n\n"
-            "_قريب إن شاء الله_ 🚧"
-        )
+        await query.edit_message_text("📊 *إحصائياتك*\n\n_قريب إن شاء الله_ 🚧")
         return
 
     if data == "account_badges":
-        await query.edit_message_text(
-            "🎖️ *إنجازاتك*\n\n"
-            "_قريب إن شاء الله_ 🚧"
-        )
+        await query.edit_message_text("🎖️ *إنجازاتك*\n\n_قريب إن شاء الله_ 🚧")
         return
 
     if data == "account_upgrade":
@@ -446,7 +491,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ===== أزرار الأدمن =====
+    # أزرار الأدمن
     if data == "admin_panel" and user.id in ADMIN_IDS:
         await query.edit_message_text(
             "🎛️ *لوحة التحكم*\n\nاختار من الأزرار:",
@@ -462,6 +507,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👥 المستخدمين: {stats['total_users']}\n"
             f"⭐ المشتركين: {stats['premium_users']}\n"
             f"📨 إجمالي الطلبات: {stats['total_requests']}\n"
+            f"💎 إجمالي النقاط: {stats['total_points']}\n"
         )
         await query.edit_message_text(
             text,
@@ -471,25 +517,68 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "admin_users" and user.id in ADMIN_IDS:
-        await query.edit_message_text(
-            "👥 *قائمة المستخدمين*\n\n_قريب إن شاء الله_ 🚧",
-            parse_mode="Markdown",
-            reply_markup=admin_menu()
-        )
+        await query.edit_message_text("👥 *قائمة المستخدمين*\n\n_قريب إن شاء الله_ 🚧")
         return
 
     if data == "admin_broadcast" and user.id in ADMIN_IDS:
-        await query.edit_message_text(
-            "📢 *بث رسالة*\n\n_قريب إن شاء الله_ 🚧",
-            parse_mode="Markdown",
-            reply_markup=admin_menu()
-        )
+        await query.edit_message_text("📢 *بث رسالة*\n\n_قريب إن شاء الله_ 🚧")
         return
 
-    # ===== أزرار عامة =====
     if data == "about":
         await query.edit_message_text(ABOUT_MESSAGE, parse_mode="Markdown")
         return
+
+
+# ===== معالجة اختيار نوع التحليل =====
+async def handle_pdf_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """لما المستخدم يختار نوع التحليل"""
+    query = update.callback_query
+    data = query.data
+
+    # لو الكود مش analysis_، نروح للـ button_handler
+    if not data.startswith("analysis_"):
+        await button_handler(update, context)
+        return
+
+    await query.answer()
+    user = query.from_user
+
+    analysis_type = data.replace("analysis_", "")
+
+    pdf_text = context.user_data.get("pdf_text")
+    if not pdf_text:
+        await query.edit_message_text("⚠️ الملف مش موجود. ارفعه تاني.")
+        return
+
+    types = {
+        "summary": "📝 الملخص",
+        "explanation": "📚 الشرح التفصيلي",
+        "terms": "🔤 المصطلحات",
+        "quiz": "🎯 الكويز",
+        "examples": "💡 الأمثلة",
+        "problems": "🧮 المسائل",
+    }
+    type_name = types.get(analysis_type, "📝 التحليل")
+
+    await query.edit_message_text(f"⏳ جاري إعداد {type_name}...")
+
+    try:
+        result = analyze_pdf_content(pdf_text, analysis_type)
+        result = clean_text(result)
+
+        full_text = f"{type_name}:\n\n{result}"
+
+        if len(full_text) <= 4000:
+            await query.edit_message_text(full_text)
+        else:
+            await query.edit_message_text(full_text[:4000])
+            await update.effective_chat.send_message(full_text[4000:])
+
+        increment_usage(user.id, POINTS_REWARDS["pdf_analysis"])
+
+    except Exception as e:
+        await query.edit_message_text(f"❌ حصل خطأ: {str(e)}")
+
 
 # ===== معالجة PDF =====
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -513,14 +602,11 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     waiting = await update.message.reply_text("📄 جاري تحميل ومعالجة الملف...")
 
     pdf_path = f"temp_{user.id}.pdf"
-    report_path = f"report_{user.id}.pdf"
 
     try:
-        # نزل الملف
         file = await document.get_file()
         await file.download_to_drive(pdf_path)
 
-        # اقرا المحتوى
         await waiting.edit_text("📖 جاري قراءة المحتوى...")
         pdf_text = process_pdf(pdf_path)
 
@@ -528,11 +614,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await waiting.edit_text("❌ الملف فاضي أو مش مقروء.")
             return
 
-               # نحفظ النص في الذاكرة
         context.user_data["pdf_text"] = pdf_text
-
-        # اعرض خيارات التحليل
-        from keyboards import analysis_options_menu
 
         await waiting.edit_text(
             f"✅ *تم تحميل الملف بنجاح!*\n\n"
@@ -542,73 +624,14 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=analysis_options_menu()
         )
 
-        # امسح الملف المؤقت
         if os.path.exists(pdf_path):
             os.remove(pdf_path)
 
     except Exception as e:
         await waiting.edit_text(f"❌ حصل خطأ: {str(e)}")
-        # نمسح الملفات لو موجودة
         if os.path.exists(pdf_path):
             os.remove(pdf_path)
-        if os.path.exists(report_path):
-            os.remove(report_path)
 
-    async def handle_pdf_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
-     """لما المستخدم يختار نوع التحليل"""
-    query = update.callback_query
-    data = query.data
-
-    # لو الكود مش analysis_، نروح للـ button_handler
-    if not data.startswith("analysis_"):
-        await button_handler(update, context)
-        return
-
-    await query.answer()
-    user = query.from_user
-
-    analysis_type = data.replace("analysis_", "")
-
-    # نجيب النص من الذاكرة
-    pdf_text = context.user_data.get("pdf_text")
-    if not pdf_text:
-        await query.edit_message_text("⚠️ الملف مش موجود. ارفعه تاني.")
-        return
-
-    # نحدد النوع بالعربي
-    types = {
-        "summary": "📝 الملخص",
-        "explanation": "📚 الشرح التفصيلي",
-        "terms": "🔤 المصطلحات",
-        "quiz": "🎯 الكويز",
-        "examples": "💡 الأمثلة",
-        "problems": "🧮 المسائل",
-    }
-    type_name = types.get(analysis_type, "📝 التحليل")
-
-    # رسالة الانتظار
-    await query.edit_message_text(f"⏳ جاري إعداد {type_name}...")
-
-    try:
-        # نستدعي Gemini
-        result = analyze_pdf_content(pdf_text, analysis_type)
-        result = clean_text(result)
-
-        # نقسم النص لو طويل
-        full_text = f"{type_name}:\n\n{result}"
-
-        if len(full_text) <= 4000:
-            await query.edit_message_text(full_text)
-        else:
-            # نقسم لجزئين
-            await query.edit_message_text(full_text[:4000])
-            await update.effective_chat.send_message(full_text[4000:])
-
-        # نضيف نقاط
-        increment_usage(user.id, POINTS_REWARDS["pdf_analysis"])
-
-    except Exception as e:
-        await query.edit_message_text(f"❌ حصل خطأ: {str(e)}")
 
 # ===== معالجة الرسائل النصية =====
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -645,32 +668,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await waiting.edit_text(f"❌ حصل خطأ: {str(e)}")
 
 
-# ===== تشغيل =====
-
+# ===== معالجة الأزرار Reply =====
 async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الأزرار اللي تحت الشات (Reply Keyboard)"""
+    """معالجة الأزرار اللي تحت الشات"""
     text = update.message.text
     user = update.effective_user
 
-    # ===== تحليل PDF =====
     if text == "📄 تحليل PDF":
         await update.message.reply_text(
             "📄 *ارفع ملف PDF دلوقتي*\n\nابعتلي الملف وأنا هحلله.",
-            parse_mode="Markdown",
-            reply_markup=pdf_menu()
+            parse_mode="Markdown"
         )
         return
 
-    # ===== صورة =====
     if text == "📸 صورة":
-        await update.message.reply_text(
-            "📸 *ارفع صورة*\n\nابعتلي صورة الكتاب أو السبورة.",
-            parse_mode="Markdown",
-            reply_markup=pdf_menu()
-        )
+        await update.message.reply_text("📸 *ارفع صورة*\n\n_قريب إن شاء الله_ 🚧")
         return
 
-    # ===== كويز =====
     if text == "🎯 كويز":
         await update.message.reply_text(
             "🎯 *اختار نوع الكويز:*",
@@ -679,7 +693,6 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    # ===== شرح =====
     if text == "📚 شرح":
         await update.message.reply_text(
             "📚 *اختار نوع الشرح:*",
@@ -688,7 +701,6 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    # ===== ترجمة =====
     if text == "🌍 ترجمة":
         await update.message.reply_text(
             "🌍 *اختار نوع الترجمة:*",
@@ -697,7 +709,6 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    # ===== تلخيص =====
     if text == "📝 تلخيص":
         await update.message.reply_text(
             "📝 *اختار نوع التلخيص:*",
@@ -706,7 +717,6 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    # ===== حسابي =====
     if text == "🏆 حسابي":
         await update.message.reply_text(
             "🏆 *حسابك:*",
@@ -715,30 +725,26 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-        # ===== هدية يومية =====
     if text == "🎁 هدية يومية":
         await daily_command(update, context)
         return
 
-    # ===== نقاطي =====
     if text == "💎 نقاطي":
         await points_command(update, context)
         return
 
-    # ===== المتصدرين =====
     if text == "🏆 المتصدرين":
         await leaderboard_command(update, context)
         return
 
-    # ===== دعوة أصدقاء =====
     if text == "👥 دعوة أصدقاء":
         await invite_command(update, context)
         return
 
-    # ===== أي حاجة تانية =====
     await handle_message(update, context)
 
 
+# ===== تشغيل =====
 def main():
     init_db()
 
@@ -768,133 +774,7 @@ def main():
     print(f"👨‍💻 المطور: {DEVELOPER_NAME}")
     print("اضغط Ctrl+C للإيقاف.")
     app.run_polling()
-# ===== دوال النقاط والمستويات =====
-def format_level_bar(points, level_info):
-    """بيرسم شريط تقدم المستوى"""
-    min_pts = level_info["min_points"]
-    max_pts = level_info["max_points"]
-    
-    if max_pts == 999999:
-        return "🎉 أقصى مستوى!"
-    
-    progress = points - min_pts
-    total = max_pts - min_pts
-    percent = int((progress / total) * 100) if total > 0 else 0
-    
-    filled = int(percent / 10)
-    bar = "█" * filled + "░" * (10 - filled)
-    
-    return f"{bar} {percent}%"
 
-
-async def points_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /points"""
-    user = update.effective_user
-    get_or_create_user(user.id, user.username, user.first_name)
-    
-    points, level = get_user_points(user.id)
-    level_info = get_level_info(points)
-    bar = format_level_bar(points, level_info)
-    
-    text = (
-        f"💎 *نقاطك:* {points}\n"
-        f"🏆 *مستواك:* {level_info['name']}\n\n"
-        f"📊 *التقدم للمستوى الجاي:*\n"
-        f"`{bar}`\n\n"
-        f"🎯 عايز نقاط أكتر؟\n"
-        f"• استخدم البوت\n"
-        f"• استلم هديتك اليومية\n"
-        f"• ادعي أصحابك"
-    )
-    
-    await update.message.reply_text(
-        text,
-        parse_mode="Markdown",
-        reply_markup=points_menu()
-    )
-
-
-async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /daily"""
-    user = update.effective_user
-    get_or_create_user(user.id, user.username, user.first_name)
-    
-    result = claim_daily_gift(user.id)
-    
-    if not result["success"]:
-        await update.message.reply_text(
-            f"⚠️ {result['message']}\n\n"
-            f"🔔 متنساش ترجع تاني!",
-        )
-        return
-    
-    text = (
-        f"🎉 *مبروك!*\n\n"
-        f"💎 كسبت: *{result['points']}* نقطة\n"
-    )
-    
-    if result["bonus"] > 0:
-        text += f"🎁 بونص السلسلة: *+{result['bonus']}* نقطة\n"
-    
-    text += (
-        f"\n🔥 *سلسلتك:* {result['streak']} يوم\n"
-        f"📊 *إجمالي نقاطك:* {result['new_points']}\n"
-        f"🏆 *مستواك:* {result['level']['name']}"
-    )
-    
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-
-async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /leaderboard"""
-    top = get_leaderboard(10)
-    
-    if not top:
-        await update.message.reply_text("📊 لسه مفيش متصدرين!")
-        return
-    
-    text = "🏆 *أعلى 10 طلاب:*\n\n"
-    
-    medals = ["🥇", "🥈", "🥉"]
-    
-    for i, (user_id, first_name, username, points, level) in enumerate(top):
-        if i < 3:
-            emoji = medals[i]
-        else:
-            emoji = f"{i+1}."
-        
-        level_info = get_level_info(points)
-        name = first_name or "طالب"
-        
-        text += f"{emoji} *{name}* — {points} 💎\n"
-        text += f"   {level_info['name']}\n\n"
-    
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-
-async def invite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /invite"""
-    user = update.effective_user
-    get_or_create_user(user.id, user.username, user.first_name)
-    
-    bot_username = BOT_USERNAME.replace("@", "")
-    invite_link = f"https://t.me/{bot_username}?start=invite_{user.id}"
-    
-    text = (
-        f"👥 *دعوة الأصدقاء*\n\n"
-        f"كل صاحب يدخل من لينكك = *20 نقطة* 💎\n\n"
-        f"🔗 *لينكك الخاص:*\n"
-        f"`{invite_link}`\n\n"
-        f"📤 انسخ اللينك وابعته لأصحابك!"
-    )
-    
-    await update.message.reply_text(
-        text,
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("📤 مشاركة", url=f"https://t.me/share/url?url={invite_link}")
-        ]])
-    )
 
 if __name__ == "__main__":
     main()
