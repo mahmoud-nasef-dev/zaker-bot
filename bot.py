@@ -554,16 +554,18 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists(report_path):
             os.remove(report_path)
 
-async def handle_pdf_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """لما المستخدم يختار نوع التحليل"""
+    async def handle_pdf_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
+     """لما المستخدم يختار نوع التحليل"""
     query = update.callback_query
-    await query.answer()
-
     data = query.data
-    user = query.from_user
 
+    # لو الكود مش analysis_، نروح للـ button_handler
     if not data.startswith("analysis_"):
+        await button_handler(update, context)
         return
+
+    await query.answer()
+    user = query.from_user
 
     analysis_type = data.replace("analysis_", "")
 
