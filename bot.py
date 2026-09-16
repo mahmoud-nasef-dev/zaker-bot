@@ -27,7 +27,7 @@ from database import (
 from keyboards import (
     main_menu, pdf_menu, quiz_menu, explain_menu,
     translate_menu, summarize_menu, account_menu,
-    admin_menu, back_button, points_menu, analysis_options_menu,
+    back_button, points_menu, analysis_options_menu,
     admin_panel_menu, admin_user_actions,
     skip_subjects_button, subjects_menu
 )
