@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from datetime import date, datetime, timedelta
 from config import (
@@ -5,16 +6,66 @@ from config import (
     ADMIN_IDS, DATABASE_FILE
 )
 
+# ===== اكتشاف نوع قاعدة البيانات =====
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if DATABASE_URL:
+    # PostgreSQL (على Railway)
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    USE_POSTGRES = True
+    print("✅ باستخدام PostgreSQL")
+else:
+    # SQLite (محلي)
+    USE_POSTGRES = False
+    print("✅ باستخدام SQLite")
+
+
+# ===== دوال مساعدة =====
+def get_connection():
+    """بترجع اتصال بقاعدة البيانات"""
+    if USE_POSTGRES:
+        return psycopg2.connect(DATABASE_URL)
+    else:
+        return sqlite3.connect(DATABASE_FILE)
+
+
+def execute_query(query, params=None, fetch=False, fetchone=False, commit=False):
+    """بتنفذ استعلام وتتعامل مع الاتصال"""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # تحويل placeholders لـ PostgreSQL لو محتاج
+    if USE_POSTGRES:
+        query = query.replace("?", "%s")
+
+    try:
+        cursor.execute(query, params or ())
+        result = None
+
+        if fetch:
+            result = cursor.fetchall()
+        elif fetchone:
+            result = cursor.fetchone()
+
+        if commit:
+            conn.commit()
+
+        return result
+    finally:
+        cursor.close()
+        conn.close()
+
 
 # ===== نظام النقاط =====
 POINTS_REWARDS = {
-    "text_analysis": 5,       # تحليل نص
-    "pdf_analysis": 10,       # تحليل PDF
-    "quiz_complete": 15,      # إكمال كويز
-    "daily_gift": 5,          # هدية يومية
-    "invite_friend": 20,      # دعوة صديق
-    "streak_bonus_7": 50,     # 7 أيام متتالية
-    "streak_bonus_30": 500,   # 30 يوم متتالي
+    "text_analysis": 5,
+    "pdf_analysis": 10,
+    "quiz_complete": 15,
+    "daily_gift": 5,
+    "invite_friend": 20,
+    "streak_bonus_7": 50,
+    "streak_bonus_30": 500,
 }
 
 # ===== المستويات =====
@@ -38,59 +89,101 @@ def get_level_info(points):
 
 def init_db():
     """بيبدأ قاعدة البيانات لو مش موجودة"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            joined_date TEXT,
-            last_used TEXT,
-            total_requests INTEGER DEFAULT 0,
-            daily_requests INTEGER DEFAULT 0,
-            plan TEXT DEFAULT 'free',
-            points INTEGER DEFAULT 0,
-            level INTEGER DEFAULT 1,
-            daily_streak INTEGER DEFAULT 0,
-            last_daily_claim TEXT,
-            invited_by INTEGER DEFAULT NULL,
-            invited_count INTEGER DEFAULT 0
-        )
-    """)
+
+    # أنواع البيانات حسب نوع القاعدة
+    if USE_POSTGRES:
+        id_type = "BIGINT"
+        auto_inc = "BIGSERIAL"
+    else:
+        id_type = "INTEGER"
+        auto_inc = "INTEGER"
+
+    # جدول المستخدمين
+    if USE_POSTGRES:
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                joined_date TEXT,
+                last_used TEXT,
+                total_requests INTEGER DEFAULT 0,
+                daily_requests INTEGER DEFAULT 0,
+                plan TEXT DEFAULT 'free',
+                points INTEGER DEFAULT 0,
+                level INTEGER DEFAULT 1,
+                daily_streak INTEGER DEFAULT 0,
+                last_daily_claim TEXT,
+                invited_by BIGINT DEFAULT NULL,
+                invited_count INTEGER DEFAULT 0
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                joined_date TEXT,
+                last_used TEXT,
+                total_requests INTEGER DEFAULT 0,
+                daily_requests INTEGER DEFAULT 0,
+                plan TEXT DEFAULT 'free',
+                points INTEGER DEFAULT 0,
+                level INTEGER DEFAULT 1,
+                daily_streak INTEGER DEFAULT 0,
+                last_daily_claim TEXT,
+                invited_by INTEGER DEFAULT NULL,
+                invited_count INTEGER DEFAULT 0
+            )
+        """)
+
     conn.commit()
+    cursor.close()
     conn.close()
 
 
 def get_or_create_user(user_id, username, first_name, invited_by=None):
     """بيجيب المستخدم أو بيعمله واحد جديد"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
-    user = cursor.fetchone()
-
     today = str(date.today())
+    placeholder = "%s" if USE_POSTGRES else "?"
+
+    # ابحث عن المستخدم
+    cursor.execute(
+        f"SELECT * FROM users WHERE user_id = {placeholder}",
+        (user_id,)
+    )
+    user = cursor.fetchone()
 
     if user is None:
         # مستخدم جديد
         plan = "admin" if user_id in ADMIN_IDS else "free"
-        cursor.execute("""
-            INSERT INTO users 
-            (user_id, username, first_name, joined_date, last_used, plan, invited_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (user_id, username, first_name, today, today, plan, invited_by))
+        cursor.execute(
+            f"""INSERT INTO users 
+                (user_id, username, first_name, joined_date, last_used, plan, invited_by)
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})""",
+            (user_id, username, first_name, today, today, plan, invited_by)
+        )
         conn.commit()
 
         # لو في دعوة، نكافئ الداعي
         if invited_by:
-            add_points(invited_by, POINTS_REWARDS["invite_friend"])
-            cursor.execute("""
-                UPDATE users SET invited_count = invited_count + 1
-                WHERE user_id = ?
-            """, (invited_by,))
+            cursor.execute(
+                f"UPDATE users SET points = points + {placeholder} WHERE user_id = {placeholder}",
+                (POINTS_REWARDS["invite_friend"], invited_by)
+            )
+            cursor.execute(
+                f"UPDATE users SET invited_count = invited_count + 1 WHERE user_id = {placeholder}",
+                (invited_by,)
+            )
             conn.commit()
 
+        cursor.close()
         conn.close()
         return {
             "user_id": user_id, "plan": plan, "daily_requests": 0,
@@ -103,12 +196,14 @@ def get_or_create_user(user_id, username, first_name, invited_by=None):
     daily_requests = user[6]
 
     if last_used != today:
-        cursor.execute("""
-            UPDATE users SET daily_requests = 0, last_used = ? WHERE user_id = ?
-        """, (today, user_id))
+        cursor.execute(
+            f"UPDATE users SET daily_requests = 0, last_used = {placeholder} WHERE user_id = {placeholder}",
+            (today, user_id)
+        )
         daily_requests = 0
 
     conn.commit()
+    cursor.close()
     conn.close()
 
     return {
@@ -120,33 +215,46 @@ def get_or_create_user(user_id, username, first_name, invited_by=None):
 
 def add_points(user_id, amount):
     """بيضيف نقاط للمستخدم"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE users SET points = points + ? WHERE user_id = ?
-    """, (amount, user_id))
+    placeholder = "%s" if USE_POSTGRES else "?"
 
-    # نحدث المستوى
-    cursor.execute("SELECT points FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute(
+        f"UPDATE users SET points = points + {placeholder} WHERE user_id = {placeholder}",
+        (amount, user_id)
+    )
+
+    cursor.execute(
+        f"SELECT points FROM users WHERE user_id = {placeholder}",
+        (user_id,)
+    )
     row = cursor.fetchone()
     if row:
-        new_points = row[0]
-        level_info = get_level_info(new_points)
-        cursor.execute("""
-            UPDATE users SET level = ? WHERE user_id = ?
-        """, (level_info["level"], user_id))
+        level_info = get_level_info(row[0])
+        cursor.execute(
+            f"UPDATE users SET level = {placeholder} WHERE user_id = {placeholder}",
+            (level_info["level"], user_id)
+        )
 
     conn.commit()
+    cursor.close()
     conn.close()
 
 
 def get_user_points(user_id):
     """بيرجع نقاط المستخدم"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT points, level FROM users WHERE user_id = ?", (user_id,))
+    placeholder = "%s" if USE_POSTGRES else "?"
+
+    cursor.execute(
+        f"SELECT points, level FROM users WHERE user_id = {placeholder}",
+        (user_id,)
+    )
     row = cursor.fetchone()
+    cursor.close()
     conn.close()
+
     if row:
         return row[0], row[1]
     return 0, 1
@@ -154,14 +262,18 @@ def get_user_points(user_id):
 
 def claim_daily_gift(user_id):
     """بيحاول يستلم الهدية اليومية"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT last_daily_claim, daily_streak FROM users WHERE user_id = ?
-    """, (user_id,))
+    placeholder = "%s" if USE_POSTGRES else "?"
+
+    cursor.execute(
+        f"SELECT last_daily_claim, daily_streak FROM users WHERE user_id = {placeholder}",
+        (user_id,)
+    )
     row = cursor.fetchone()
 
     if not row:
+        cursor.close()
         conn.close()
         return {"success": False, "message": "المستخدم مش موجود"}
 
@@ -176,6 +288,7 @@ def claim_daily_gift(user_id):
             remaining = timedelta(hours=24) - diff
             hours = remaining.seconds // 3600
             minutes = (remaining.seconds % 3600) // 60
+            cursor.close()
             conn.close()
             return {
                 "success": False,
@@ -183,7 +296,6 @@ def claim_daily_gift(user_id):
                 "remaining_hours": hours,
             }
 
-        # لو الفرقة أكتر من 48 ساعة، نصفّر السلسلة
         if diff > timedelta(hours=48):
             streak = 0
         else:
@@ -191,7 +303,6 @@ def claim_daily_gift(user_id):
     else:
         streak = 1
 
-    # نحسب النقاط
     points = POINTS_REWARDS["daily_gift"]
     bonus = 0
 
@@ -202,21 +313,25 @@ def claim_daily_gift(user_id):
 
     total = points + bonus
 
-    # نحدث المستخدم
-    cursor.execute("""
-        UPDATE users 
-        SET last_daily_claim = ?, daily_streak = ?, points = points + ?
-        WHERE user_id = ?
-    """, (now.strftime("%Y-%m-%d %H:%M:%S"), streak, total, user_id))
+    cursor.execute(
+        f"UPDATE users SET last_daily_claim = {placeholder}, daily_streak = {placeholder}, points = points + {placeholder} WHERE user_id = {placeholder}",
+        (now.strftime("%Y-%m-%d %H:%M:%S"), streak, total, user_id)
+    )
 
-    # نحدث المستوى
-    cursor.execute("SELECT points FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute(
+        f"SELECT points FROM users WHERE user_id = {placeholder}",
+        (user_id,)
+    )
     new_points = cursor.fetchone()[0]
     level_info = get_level_info(new_points)
-    cursor.execute("UPDATE users SET level = ? WHERE user_id = ?",
-                   (level_info["level"], user_id))
+
+    cursor.execute(
+        f"UPDATE users SET level = {placeholder} WHERE user_id = {placeholder}",
+        (level_info["level"], user_id)
+    )
 
     conn.commit()
+    cursor.close()
     conn.close()
 
     return {
@@ -232,12 +347,16 @@ def claim_daily_gift(user_id):
 
 def get_daily_status(user_id):
     """بيرجع حالة الهدية اليومية"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT last_daily_claim, daily_streak FROM users WHERE user_id = ?
-    """, (user_id,))
+    placeholder = "%s" if USE_POSTGRES else "?"
+
+    cursor.execute(
+        f"SELECT last_daily_claim, daily_streak FROM users WHERE user_id = {placeholder}",
+        (user_id,)
+    )
     row = cursor.fetchone()
+    cursor.close()
     conn.close()
 
     if not row:
@@ -252,7 +371,6 @@ def get_daily_status(user_id):
     diff = datetime.now() - last_claim_date
 
     if diff >= timedelta(hours=24):
-        # لو الفرقة أكتر من 48 ساعة، السلسلة اتكسرت
         if diff > timedelta(hours=48):
             streak = 0
         return {"can_claim": True, "streak": streak, "remaining_hours": 0}
@@ -264,49 +382,67 @@ def get_daily_status(user_id):
 
 def get_leaderboard(limit=10):
     """بيرجع أعلى 10 مستخدمين"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT user_id, first_name, username, points, level
-        FROM users
-        ORDER BY points DESC
-        LIMIT ?
-    """, (limit,))
+    placeholder = "%s" if USE_POSTGRES else "?"
+
+    cursor.execute(
+        f"""SELECT user_id, first_name, username, points, level
+            FROM users
+            ORDER BY points DESC
+            LIMIT {placeholder}""",
+        (limit,)
+    )
     rows = cursor.fetchall()
+    cursor.close()
     conn.close()
     return rows
 
 
 def increment_usage(user_id, points=0):
     """بيزود عدد الاستخدامات + النقاط"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        UPDATE users
-        SET total_requests = total_requests + 1,
-            daily_requests = daily_requests + 1,
-            points = points + ?
-        WHERE user_id = ?
-    """, (points, user_id))
+    placeholder = "%s" if USE_POSTGRES else "?"
 
-    # نحدث المستوى
-    cursor.execute("SELECT points FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute(
+        f"""UPDATE users
+            SET total_requests = total_requests + 1,
+                daily_requests = daily_requests + 1,
+                points = points + {placeholder}
+            WHERE user_id = {placeholder}""",
+        (points, user_id)
+    )
+
+    cursor.execute(
+        f"SELECT points FROM users WHERE user_id = {placeholder}",
+        (user_id,)
+    )
     row = cursor.fetchone()
     if row:
         level_info = get_level_info(row[0])
-        cursor.execute("UPDATE users SET level = ? WHERE user_id = ?",
-                       (level_info["level"], user_id))
+        cursor.execute(
+            f"UPDATE users SET level = {placeholder} WHERE user_id = {placeholder}",
+            (level_info["level"], user_id)
+        )
 
     conn.commit()
+    cursor.close()
     conn.close()
 
 
 def check_limit(user_id):
     """بيتأكد إن المستخدم لسه عنده استخدامات متاحة"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT plan, daily_requests, points FROM users WHERE user_id = ?", (user_id,))
+    placeholder = "%s" if USE_POSTGRES else "?"
+
+    cursor.execute(
+        f"SELECT plan, daily_requests, points FROM users WHERE user_id = {placeholder}",
+        (user_id,)
+    )
     row = cursor.fetchone()
+    cursor.close()
     conn.close()
 
     if row is None:
@@ -322,9 +458,9 @@ def check_limit(user_id):
 
     limit = limits.get(plan, FREE_DAILY_LIMIT)
 
-    # مكافأة: لو المستخدم في مستوى أعلى، نزود الحد
+    # مكافأة: كل مستوى = +2 استخدام
     level_info = get_level_info(points)
-    bonus = (level_info["level"] - 1) * 2  # كل مستوى = +2 استخدام
+    bonus = (level_info["level"] - 1) * 2
     limit += bonus
 
     if daily_requests >= limit:
@@ -335,26 +471,38 @@ def check_limit(user_id):
 
 def get_user_plan(user_id):
     """بيرجع خطة المستخدم"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT plan FROM users WHERE user_id = ?", (user_id,))
+    placeholder = "%s" if USE_POSTGRES else "?"
+
+    cursor.execute(
+        f"SELECT plan FROM users WHERE user_id = {placeholder}",
+        (user_id,)
+    )
     row = cursor.fetchone()
+    cursor.close()
     conn.close()
     return row[0] if row else "free"
 
 
 def set_user_plan(user_id, plan):
-    """بيغير خطة المستخدم (للأدمن)"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    """بيغير خطة المستخدم"""
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET plan = ? WHERE user_id = ?", (plan, user_id))
+    placeholder = "%s" if USE_POSTGRES else "?"
+
+    cursor.execute(
+        f"UPDATE users SET plan = {placeholder} WHERE user_id = {placeholder}",
+        (plan, user_id)
+    )
     conn.commit()
+    cursor.close()
     conn.close()
 
 
 def get_stats():
-    """إحصائيات عامة للأدمن"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    """إحصائيات عامة"""
+    conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("SELECT COUNT(*) FROM users")
@@ -369,6 +517,7 @@ def get_stats():
     cursor.execute("SELECT SUM(points) FROM users")
     total_points = cursor.fetchone()[0] or 0
 
+    cursor.close()
     conn.close()
 
     return {
@@ -378,45 +527,58 @@ def get_stats():
         "total_points": total_points,
     }
 
+
 def get_all_users(limit=20):
     """بيرجع آخر 20 مستخدم"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT user_id, first_name, username, points, level, plan, last_used
-        FROM users
-        ORDER BY last_used DESC
-        LIMIT ?
-    """, (limit,))
+    placeholder = "%s" if USE_POSTGRES else "?"
+
+    cursor.execute(
+        f"""SELECT user_id, first_name, username, points, level, plan, last_used
+            FROM users
+            ORDER BY last_used DESC
+            LIMIT {placeholder}""",
+        (limit,)
+    )
     rows = cursor.fetchall()
+    cursor.close()
     conn.close()
     return rows
 
 
 def get_user_details(user_id):
     """بيرجع تفاصيل مستخدم معين"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        SELECT user_id, first_name, username, joined_date, last_used,
-               total_requests, points, level, plan, daily_streak, invited_count
-        FROM users WHERE user_id = ?
-    """, (user_id,))
+    placeholder = "%s" if USE_POSTGRES else "?"
+
+    cursor.execute(
+        f"""SELECT user_id, first_name, username, joined_date, last_used,
+                   total_requests, points, level, plan, daily_streak, invited_count
+            FROM users WHERE user_id = {placeholder}""",
+        (user_id,)
+    )
     row = cursor.fetchone()
+    cursor.close()
     conn.close()
     return row
 
 
 def get_detailed_stats():
     """إحصائيات مفصلة"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
 
     cursor.execute("SELECT COUNT(*) FROM users")
     total_users = cursor.fetchone()[0]
 
     today = str(date.today())
-    cursor.execute("SELECT COUNT(*) FROM users WHERE last_used = ?", (today,))
+    placeholder = "%s" if USE_POSTGRES else "?"
+    cursor.execute(
+        f"SELECT COUNT(*) FROM users WHERE last_used = {placeholder}",
+        (today,)
+    )
     active_today = cursor.fetchone()[0]
 
     cursor.execute("SELECT COUNT(*) FROM users WHERE plan = 'premium'")
@@ -431,13 +593,13 @@ def get_detailed_stats():
     cursor.execute("SELECT SUM(points) FROM users")
     total_points = cursor.fetchone()[0] or 0
 
-    # أعلى 5 مستخدمين
     cursor.execute("""
         SELECT first_name, points FROM users
         ORDER BY points DESC LIMIT 5
     """)
     top_users = cursor.fetchall()
 
+    cursor.close()
     conn.close()
 
     return {
@@ -452,41 +614,42 @@ def get_detailed_stats():
 
 
 def ban_user(user_id):
-    """حظر مستخدم (بيغير الخطة لـ banned)"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    """حظر مستخدم"""
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET plan = 'banned' WHERE user_id = ?", (user_id,))
+    placeholder = "%s" if USE_POSTGRES else "?"
+
+    cursor.execute(
+        f"UPDATE users SET plan = 'banned' WHERE user_id = {placeholder}",
+        (user_id,)
+    )
     conn.commit()
+    cursor.close()
     conn.close()
 
 
 def unban_user(user_id):
     """فك الحظر"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET plan = 'free' WHERE user_id = ?", (user_id,))
+    placeholder = "%s" if USE_POSTGRES else "?"
+
+    cursor.execute(
+        f"UPDATE users SET plan = 'free' WHERE user_id = {placeholder}",
+        (user_id,)
+    )
     conn.commit()
+    cursor.close()
     conn.close()
 
 
 def get_all_user_ids():
     """بيرجع كل الـ user_ids (للبث)"""
-    conn = sqlite3.connect(DATABASE_FILE)
+    conn = get_connection()
     cursor = conn.cursor()
+
     cursor.execute("SELECT user_id FROM users WHERE plan != 'banned'")
     rows = cursor.fetchall()
+    cursor.close()
     conn.close()
     return [row[0] for row in rows]
-def get_all_users(limit=20):
-    """بيرجع آخر 20 مستخدم"""
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT user_id, first_name, username, points, level, plan, last_used
-        FROM users
-        ORDER BY last_used DESC
-        LIMIT ?
-    """, (limit,))
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
