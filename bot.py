@@ -496,38 +496,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # أزرار الأدمن
-    if data == "admin_panel" and user.id in ADMIN_IDS:
-        await query.edit_message_text(
-            "🎛️ *لوحة التحكم*\n\nاختار من الأزرار:",
-            parse_mode="Markdown",
-            reply_markup=admin_menu()
-        )
-        return
 
-    if data == "admin_stats" and user.id in ADMIN_IDS:
-        stats = get_stats()
-        text = (
-            f"📊 *إحصائيات البوت*\n\n"
-            f"👥 المستخدمين: {stats['total_users']}\n"
-            f"⭐ المشتركين: {stats['premium_users']}\n"
-            f"📨 إجمالي الطلبات: {stats['total_requests']}\n"
-            f"💎 إجمالي النقاط: {stats['total_points']}\n"
-        )
-        await query.edit_message_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=admin_menu()
-        )
-        return
-
-    if data == "admin_users" and user.id in ADMIN_IDS:
-        await query.edit_message_text("👥 *قائمة المستخدمين*\n\n_قريب إن شاء الله_ 🚧")
-        return
-
-    if data == "admin_broadcast" and user.id in ADMIN_IDS:
-        await query.edit_message_text("📢 *بث رسالة*\n\n_قريب إن شاء الله_ 🚧")
-        return
 
     if data == "about":
         await query.edit_message_text(ABOUT_MESSAGE, parse_mode="Markdown")
