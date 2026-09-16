@@ -526,20 +526,45 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if data == "admin_users" and user.id in ADMIN_IDS:
-        users = get_all_users(20)
+        if data == "admin_users" and user.id in ADMIN_IDS:
+         users = get_all_users(20)
         
-        text = "👥 *آخر 20 مستخدم:*\n\n"
-        for user_id, first_name, username, points, level, plan, last_used in users:
+        if not users:
+            await query.edit_message_text(
+                "👥 *آخر 20 مستخدم:*\n\n_لسه مفيش مستخدمين_ 🚧",
+                parse_mode="Markdown",
+                reply_markup=admin_panel_menu()
+            )
+            return
+        
+        # نقسم المستخدمين لجزئين
+        mid = len(users) // 2
+        part1 = users[:mid]
+        part2 = users[mid:]
+        
+        # الجزء الأول
+        text1 = f"👥 *آخر {len(users)} مستخدم*\n(الجزء الأول من {len(part1)})\n\n"
+        for user_id, first_name, username, points, level, plan, last_used in part1:
             plan_emoji = {"free": "🆓", "premium": "⭐", "admin": "👑", "banned": "🚫"}.get(plan, "🆓")
-            text += f"{plan_emoji} *{first_name or 'مستخدم'}* — {points} 💎\n"
-            text += f"   🆔 `{user_id}`\n\n"
+            text1 += f"{plan_emoji} *{first_name or 'مستخدم'}* — {points} 💎\n"
+            text1 += f"   🆔 `{user_id}`\n\n"
         
         await query.edit_message_text(
-            text,
+            text1,
             parse_mode="Markdown",
             reply_markup=admin_panel_menu()
         )
+        
+        # الجزء التاني (لو في)
+        if part2:
+            text2 = f"(الجزء التاني من {len(part2)})\n\n"
+            for user_id, first_name, username, points, level, plan, last_used in part2:
+                plan_emoji = {"free": "🆓", "premium": "⭐", "admin": "👑", "banned": "🚫"}.get(plan, "🆓")
+                text2 += f"{plan_emoji} *{first_name or 'مستخدم'}* — {points} 💎\n"
+                text2 += f"   🆔 `{user_id}`\n\n"
+            
+            await update.effective_chat.send_message(text2, parse_mode="Markdown")
+        
         return
 
     if data == "admin_broadcast" and user.id in ADMIN_IDS:
