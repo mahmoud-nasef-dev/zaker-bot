@@ -15,14 +15,14 @@ from config import (
 )
 from database import (
     init_db, get_or_create_user, increment_usage,
-    check_limit, get_user_plan, set_user_plan, get_stats,
+    check_limit, get_user_plan, set_user_plan, get_detailed_stats,
     add_points, get_user_points, claim_daily_gift,
-    get_daily_status, get_leaderboard, get_level_info,
+    get_leaderboard, get_level_info,
     POINTS_REWARDS, LEVELS,
-    get_all_users, get_user_details, get_detailed_stats,
-    ban_user, unban_user, get_all_user_ids,
+    get_all_users, get_all_user_ids,
     get_user_subjects, add_subject, delete_subject,
-    clear_user_subjects, has_subjects
+    clear_user_subjects, has_subjects,
+    set_user_college, get_user_college
 )
 from keyboards import (
     main_menu, pdf_menu, quiz_menu, explain_menu,
@@ -61,21 +61,29 @@ def process_pdf(file_path):
     return text
 
 
-def analyze_pdf_content(text, analysis_type="summary", user_subjects=None):
+def analyze_pdf_content(text, analysis_type="summary", user_subjects=None, user_college=None):
     """بيحلل محتوى PDF حسب النوع المطلوب"""
     if len(text) > 15000:
         text = text[:15000] + "..."
 
-    # نبني سياق المواد
-    subjects_context = ""
+    # نبني سياق المواد والكلية
+    context_parts = []
+    context_parts.append("إنت مساعد طالب جامعي.")
+    
+    if user_college:
+        context_parts.append(f"الطالب في كلية: {user_college}.")
+    
     if user_subjects:
         subjects_str = ", ".join(user_subjects)
-        subjects_context = f"\nمواد الطالب: {subjects_str}\nخلي أمثلتك وشرحك يناسب المواد دي.\n"
+        context_parts.append(f"مواد الطالب: {subjects_str}.")
+        context_parts.append("خلي أمثلتك وشرحك يناسب الكلية والمواد دي.")
     else:
-        subjects_context = "\nإنت مساعد طالب جامعي في أي كلية أو مادة.\n"
+        context_parts.append("إنت مساعد طالب جامعي في أي كلية أو مادة.")
+    
+    subjects_context = "\n".join(context_parts)
 
     prompts = {
-        "summary": f"""إنت مساعد طالب جامعي.{subjects_context}
+        "summary": f"""{subjects_context}
 المحتوى ده من محاضرة بالإنجليزي.
 
 اعملي **ملخص سريع بالعربي** في 5-7 نقاط أساسية بس.
@@ -84,7 +92,7 @@ def analyze_pdf_content(text, analysis_type="summary", user_subjects=None):
 المحتوى:
 {text}
 """,
-        "explanation": f"""إنت مساعد طالب جامعي.{subjects_context}
+        "explanation": f"""{subjects_context}
 المحتوى ده من محاضرة بالإنجليزي.
 
 اعملي **شرح تفصيلي بالعربي** للمحتوى كله، بشرط:
@@ -97,7 +105,7 @@ def analyze_pdf_content(text, analysis_type="summary", user_subjects=None):
 المحتوى:
 {text}
 """,
-        "terms": f"""إنت مساعد طالب جامعي.{subjects_context}
+        "terms": f"""{subjects_context}
 المحتوى ده من محاضرة بالإنجليزي.
 
 اعملي **قائمة المصطلحات المهمة** بالشكل ده:
@@ -111,7 +119,7 @@ def analyze_pdf_content(text, analysis_type="summary", user_subjects=None):
 المحتوى:
 {text}
 """,
-        "quiz": f"""إنت مساعد طالب جامعي.{subjects_context}
+        "quiz": f"""{subjects_context}
 المحتوى ده من محاضرة بالإنجليزي.
 
 اعملي **5 أسئلة اختيارات** على المحتوى، بالشكل ده بالظبط:
@@ -130,7 +138,7 @@ def analyze_pdf_content(text, analysis_type="summary", user_subjects=None):
 المحتوى:
 {text}
 """,
-        "examples": f"""إنت مساعد طالب جامعي.{subjects_context}
+        "examples": f"""{subjects_context}
 المحتوى ده من محاضرة بالإنجليزي.
 
 اعملي **5 أمثلة عملية من الحياة الواقعية** على المفاهيم اللي في المحتوى.
@@ -142,7 +150,7 @@ def analyze_pdf_content(text, analysis_type="summary", user_subjects=None):
 المحتوى:
 {text}
 """,
-        "problems": f"""إنت مساعد طالب جامعي.{subjects_context}
+        "problems": f"""{subjects_context}
 المحتوى ده من محاضرة بالإنجليزي.
 
 اعملي **5 تمارين/مسائل عملية** على المحتوى.
@@ -204,8 +212,7 @@ def format_level_bar(points, level_info):
 # ===== الأوامر =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    
-    # نستخرج invite_id لو موجود
+
     invited_by = None
     if context.args and len(context.args) > 0:
         arg = context.args[0]
@@ -214,10 +221,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 invited_by = int(arg.replace("invite_", ""))
             except:
                 pass
-    
+
     get_or_create_user(user.id, user.username, user.first_name, invited_by)
 
-    # نتأكد لو المستخدم عنده مواد
+    # تحقق من المواد
     if not has_subjects(user.id):
         await update.message.reply_text(
             f"أهلاً *{user.first_name}*! 👋\n\n"
@@ -236,7 +243,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # عنده مواد → ترحيب عادي
+    # تحقق من الكلية
+    user_college = get_user_college(user.id)
+    if not user_college:
+        context.user_data["awaiting_college"] = True
+        await update.message.reply_text(
+            f"📚 تمام! موادي محفوظة ✅\n\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"🎓 عايز أعرف *إنت في أي كلية*:\n\n"
+            f"اكتب اسم كليتك (مثال: حاسبات، طب، هندسة، تجارة، آداب، حقوق، علوم...)",
+            parse_mode="Markdown"
+        )
+        return
+
+    # ترحيب عادي
     plan = get_user_plan(user.id)
     allowed, remaining = check_limit(user.id)
     points, level = get_user_points(user.id)
@@ -250,14 +270,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     subjects_text = "، ".join(subjects[:3]) if subjects else "مفيش"
+    if len(subjects) > 3:
+        subjects_text += f" + {len(subjects)-3}"
 
     welcome = (
         f"أهلاً *{user.first_name}*! 👋\n\n"
-        f"🎓 إنت في *ذاكر* - مساعدك الدراسي\n\n"
+        f"🎓 *ذاكر* - مساعدك الدراسي\n\n"
         f"💎 *نقاطك:* {points}\n"
         f"🏆 *مستواك:* {level_info['name']}\n"
         f"👤 *حسابك:* {plan_names.get(plan, 'مجاني')}\n"
         f"📊 *متبقي اليوم:* {remaining} استخدام\n"
+        f"🎓 *كليتك:* {user_college}\n"
         f"📚 *موادك:* {subjects_text}\n\n"
         f"━━━━━━━━━━━━━━━\n\n"
         f"*اختار من الأزرار تحت* 👇"
@@ -315,7 +338,6 @@ async def myplan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def points_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /points"""
     user = update.effective_user
     get_or_create_user(user.id, user.username, user.first_name)
 
@@ -342,7 +364,6 @@ async def points_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /daily"""
     user = update.effective_user
     get_or_create_user(user.id, user.username, user.first_name)
 
@@ -369,7 +390,6 @@ async def daily_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /leaderboard"""
     top = get_leaderboard(10)
 
     if not top:
@@ -390,7 +410,6 @@ async def leaderboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def invite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /invite"""
     user = update.effective_user
     get_or_create_user(user.id, user.username, user.first_name)
 
@@ -415,7 +434,6 @@ async def invite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def subjects_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /subjects"""
     user = update.effective_user
     get_or_create_user(user.id, user.username, user.first_name)
 
@@ -444,7 +462,6 @@ async def subjects_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== معالجة الأزرار Inline =====
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة ضغطات الأزرار Inline"""
     query = update.callback_query
     await query.answer()
 
@@ -455,13 +472,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "skip_subjects":
         await query.edit_message_text(
             "👍 تمام! تقدر تضيف موادك في أي وقت من:\n"
-            "🏆 حسابي → 📚 موادي\n\n"
-            "اختار من الأزرار تحت 👇"
+            "🏆 حسابي → 📚 موادي"
         )
-        # نبعت القائمة الرئيسية
+        context.user_data["awaiting_college"] = True
         await update.effective_chat.send_message(
-            "🏠 القائمة الرئيسية:",
-            reply_markup=main_menu(is_admin=(user.id in ADMIN_IDS))
+            "🎓 *في أي كلية بتدرس؟*\n\n"
+            "اكتب اسم كليتك (مثال: حاسبات، طب، هندسة، تجارة، آداب...)",
+            parse_mode="Markdown"
         )
         return
 
@@ -481,10 +498,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "my_subjects":
         subjects = get_user_subjects(user.id)
         if not subjects:
-            text = "📚 *موادك*\n\nلسه مسجلتش مواد.\n\nاختار:"
+            text = "📚 *موادك*\n\nلسه مسجلتش مواد."
         else:
             subjects_list = "\n".join([f"{i+1}. {s}" for i, s in enumerate(subjects)])
-            text = f"📚 *موادك ({len(subjects)}):*\n\n{subjects_list}\n\nعايز تعدل؟"
+            text = f"📚 *موادك ({len(subjects)}):*\n\n{subjects_list}"
 
         await query.edit_message_text(
             text,
@@ -496,7 +513,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "add_subject":
         await query.edit_message_text(
             "➕ *ضيف مادة*\n\n"
-            "اكتب اسم المادة (أو اكتبهم كلهم في سطر لكل مادة).\n\n"
+            "اكتب اسم المادة (أو اكتبهم كلهم، كل مادة في سطر).\n\n"
             "📝 مستنيك...",
             parse_mode="Markdown"
         )
@@ -527,7 +544,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # نبني أزرار لكل مادة
         keyboard = []
         for subject in subjects:
             keyboard.append([
@@ -576,9 +592,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "upload_image":
-        await query.edit_message_text(
-            "📸 *ارفع صورة*\n\n_قريب إن شاء الله_ 🚧"
-        )
+        await query.edit_message_text("📸 *ارفع صورة*\n\n_قريب إن شاء الله_ 🚧")
         return
 
     # ===== الكويز =====
@@ -636,6 +650,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         points, level = get_user_points(user.id)
         level_info = get_level_info(points)
         subjects = get_user_subjects(user.id)
+        college = get_user_college(user.id)
 
         plan_names = {
             "free": "🆓 مجاني",
@@ -653,6 +668,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💎 النقاط: {points}\n"
             f"🏆 المستوى: {level_info['name']}\n"
             f"✅ متبقي اليوم: {remaining} استخدام\n"
+            f"🎓 الكلية: {college or 'لسه'}\n"
             f"📚 المواد: {subjects_text}\n"
         )
 
@@ -677,7 +693,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ===== عن البوت =====
     if data == "about":
         await query.edit_message_text(ABOUT_MESSAGE, parse_mode="Markdown")
         return
@@ -719,12 +734,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # نقسم المستخدمين لجزئين
         mid = len(users) // 2
         part1 = users[:mid] if mid > 0 else users
         part2 = users[mid:] if mid > 0 else []
 
-        # الجزء الأول
         text1 = f"👥 *آخر {len(users)} مستخدم*\n(الجزء الأول من {len(part1)})\n\n"
         for u_id, first_name, username, points, level, plan, last_used in part1:
             plan_emoji = {"free": "🆓", "premium": "⭐", "admin": "👑", "banned": "🚫"}.get(plan, "🆓")
@@ -737,7 +750,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=admin_panel_menu()
         )
 
-        # الجزء التاني
         if part2:
             text2 = f"(الجزء التاني من {len(part2)})\n\n"
             for u_id, first_name, username, points, level, plan, last_used in part2:
@@ -762,11 +774,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== معالجة اختيار نوع التحليل =====
 async def handle_pdf_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """لما المستخدم يختار نوع التحليل"""
     query = update.callback_query
     data = query.data
 
-    # لو الكود مش analysis_، نروح للـ button_handler
     if not data.startswith("analysis_"):
         await button_handler(update, context)
         return
@@ -794,10 +804,10 @@ async def handle_pdf_options(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.edit_message_text(f"⏳ جاري إعداد {type_name}...")
 
     try:
-        # نجيب مواد المستخدم
         user_subjects = get_user_subjects(user.id)
+        user_college = get_user_college(user.id)
 
-        result = analyze_pdf_content(pdf_text, analysis_type, user_subjects)
+        result = analyze_pdf_content(pdf_text, analysis_type, user_subjects, user_college)
         result = clean_text(result)
 
         full_text = f"{type_name}:\n\n{result}"
@@ -816,7 +826,6 @@ async def handle_pdf_options(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # ===== معالجة PDF =====
 async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """لما المستخدم يبعت PDF"""
     user = update.effective_user
     document = update.message.document
 
@@ -874,9 +883,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     get_or_create_user(user.id, user.username, user.first_name)
 
-    # ===== لو المستخدم بيكتب مواده =====
+    # ===== إدخال المواد =====
     if context.user_data.get("awaiting_subjects"):
-        # نقسم السطور
         lines = [line.strip() for line in text.split("\n") if line.strip()]
 
         if not lines:
@@ -894,15 +902,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             added_text = "\n".join([f"✅ {s}" for s in added])
             await update.message.reply_text(
                 f"🎉 *تمام! حفظت موادك:*\n\n{added_text}\n\n"
-                f"دلوقتي لما ترفع محاضرة، هحللها حسب موادك 👌",
-                parse_mode="Markdown",
-                reply_markup=main_menu(is_admin=(user.id in ADMIN_IDS))
+                f"━━━━━━━━━━━━━━━\n\n"
+                f"🎓 *في أي كلية بتدرس؟*\n"
+                f"اكتب اسم كليتك (مثال: حاسبات، طب، هندسة، تجارة، آداب...)",
+                parse_mode="Markdown"
             )
+            context.user_data["awaiting_college"] = True
         else:
             await update.message.reply_text(
                 "⚠️ المواد دي موجودة بالفعل.",
                 reply_markup=main_menu(is_admin=(user.id in ADMIN_IDS))
             )
+        return
+
+    # ===== إدخال الكلية =====
+    if context.user_data.get("awaiting_college"):
+        college = text.strip()
+        context.user_data["awaiting_college"] = False
+        set_user_college(user.id, college)
+
+        await update.message.reply_text(
+            f"🎉 *تمام! كلية: {college}*\n\n"
+            f"دلوقتي عارف كل حاجة عنك 💪\n\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"ابدأ من الأزرار تحت 👇",
+            parse_mode="Markdown",
+            reply_markup=main_menu(is_admin=(user.id in ADMIN_IDS))
+        )
         return
 
     # ===== المعالجة العادية =====
@@ -936,9 +962,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== معالجة الأزرار Reply =====
 async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الأزرار اللي تحت الشات"""
     text = update.message.text
     user = update.effective_user
+
+    # ===== لو في عملية إدخال =====
+    if context.user_data.get("awaiting_subjects") or context.user_data.get("awaiting_college"):
+        await handle_message(update, context)
+        return
 
     if text == "📄 تحليل PDF":
         await update.message.reply_text(
@@ -1005,6 +1035,10 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
 
     if text == "👥 دعوة أصدقاء":
         await invite_command(update, context)
+        return
+
+    if text == "📚 موادي":
+        await subjects_command(update, context)
         return
 
     if text == "🎛️ لوحة التحكم":

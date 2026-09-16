@@ -10,12 +10,10 @@ from config import (
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if DATABASE_URL:
-    # PostgreSQL (على Railway)
     import psycopg2
     USE_POSTGRES = True
     print("✅ باستخدام PostgreSQL")
 else:
-    # SQLite (محلي)
     USE_POSTGRES = False
     print("✅ باستخدام SQLite")
 
@@ -87,7 +85,8 @@ def init_db():
                 daily_streak INTEGER DEFAULT 0,
                 last_daily_claim TEXT,
                 invited_by BIGINT DEFAULT NULL,
-                invited_count INTEGER DEFAULT 0
+                invited_count INTEGER DEFAULT 0,
+                college TEXT DEFAULT NULL
             )
         """)
     else:
@@ -106,7 +105,8 @@ def init_db():
                 daily_streak INTEGER DEFAULT 0,
                 last_daily_claim TEXT,
                 invited_by INTEGER DEFAULT NULL,
-                invited_count INTEGER DEFAULT 0
+                invited_count INTEGER DEFAULT 0,
+                college TEXT DEFAULT NULL
             )
         """)
 
@@ -200,6 +200,37 @@ def get_or_create_user(user_id, username, first_name, invited_by=None):
         "total_requests": user[5], "points": user[8], "level": user[9],
         "daily_streak": user[10], "is_new": False
     }
+
+
+def set_user_college(user_id, college):
+    """بيحفظ كلية المستخدم"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    cursor.execute(
+        f"UPDATE users SET college = {ph} WHERE user_id = {ph}",
+        (college, user_id)
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def get_user_college(user_id):
+    """بيرجع كلية المستخدم"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    cursor.execute(
+        f"SELECT college FROM users WHERE user_id = {ph}",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return row[0] if row and row[0] else None
 
 
 # ===== دوال النقاط =====
@@ -309,7 +340,6 @@ def check_limit(user_id):
 
     limit = limits.get(plan, FREE_DAILY_LIMIT)
 
-    # مكافأة: كل مستوى = +2 استخدام
     level_info = get_level_info(points)
     bonus = (level_info["level"] - 1) * 2
     limit += bonus
@@ -351,7 +381,7 @@ def set_user_plan(user_id, plan):
     conn.close()
 
 
-# ===== دوال الهدية اليومية =====
+# ===== الهدية اليومية =====
 def claim_daily_gift(user_id):
     """بيحاول يستلم الهدية اليومية"""
     conn = get_connection()
@@ -437,41 +467,6 @@ def claim_daily_gift(user_id):
     }
 
 
-def get_daily_status(user_id):
-    """بيرجع حالة الهدية اليومية"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    ph = placeholder()
-
-    cursor.execute(
-        f"SELECT last_daily_claim, daily_streak FROM users WHERE user_id = {ph}",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-
-    if not row:
-        return {"can_claim": True, "streak": 0, "remaining_hours": 0}
-
-    last_claim, streak = row
-
-    if not last_claim:
-        return {"can_claim": True, "streak": 0, "remaining_hours": 0}
-
-    last_claim_date = datetime.strptime(last_claim, "%Y-%m-%d %H:%M:%S")
-    diff = datetime.now() - last_claim_date
-
-    if diff >= timedelta(hours=24):
-        if diff > timedelta(hours=48):
-            streak = 0
-        return {"can_claim": True, "streak": streak, "remaining_hours": 0}
-
-    remaining = timedelta(hours=24) - diff
-    hours = remaining.seconds // 3600
-    return {"can_claim": False, "streak": streak, "remaining_hours": hours}
-
-
 # ===== المتصدرين =====
 def get_leaderboard(limit=10):
     """بيرجع أعلى 10 مستخدمين"""
@@ -493,34 +488,6 @@ def get_leaderboard(limit=10):
 
 
 # ===== الإحصائيات =====
-def get_stats():
-    """إحصائيات عامة"""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("SELECT COUNT(*) FROM users")
-    total_users = cursor.fetchone()[0]
-
-    cursor.execute("SELECT COUNT(*) FROM users WHERE plan = 'premium'")
-    premium_users = cursor.fetchone()[0]
-
-    cursor.execute("SELECT SUM(total_requests) FROM users")
-    total_requests = cursor.fetchone()[0] or 0
-
-    cursor.execute("SELECT SUM(points) FROM users")
-    total_points = cursor.fetchone()[0] or 0
-
-    cursor.close()
-    conn.close()
-
-    return {
-        "total_users": total_users,
-        "premium_users": premium_users,
-        "total_requests": total_requests,
-        "total_points": total_points,
-    }
-
-
 def get_detailed_stats():
     """إحصائيات مفصلة"""
     conn = get_connection()
@@ -569,7 +536,6 @@ def get_detailed_stats():
     }
 
 
-# ===== إدارة المستخدمين (Admin) =====
 def get_all_users(limit=20):
     """بيرجع آخر 20 مستخدم"""
     conn = get_connection()
@@ -589,56 +555,8 @@ def get_all_users(limit=20):
     return rows
 
 
-def get_user_details(user_id):
-    """بيرجع تفاصيل مستخدم معين"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    ph = placeholder()
-
-    cursor.execute(
-        f"""SELECT user_id, first_name, username, joined_date, last_used,
-                   total_requests, points, level, plan, daily_streak, invited_count
-            FROM users WHERE user_id = {ph}""",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    return row
-
-
-def ban_user(user_id):
-    """حظر مستخدم"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    ph = placeholder()
-
-    cursor.execute(
-        f"UPDATE users SET plan = 'banned' WHERE user_id = {ph}",
-        (user_id,)
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-
-def unban_user(user_id):
-    """فك الحظر"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    ph = placeholder()
-
-    cursor.execute(
-        f"UPDATE users SET plan = 'free' WHERE user_id = {ph}",
-        (user_id,)
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-
 def get_all_user_ids():
-    """بيرجع كل الـ user_ids (للبث)"""
+    """بيرجع كل الـ user_ids"""
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -649,7 +567,7 @@ def get_all_user_ids():
     return [row[0] for row in rows]
 
 
-# ===== دوال المواد (جديد) =====
+# ===== دوال المواد =====
 def get_user_subjects(user_id):
     """بيرجع مواد المستخدم"""
     conn = get_connection()
@@ -672,7 +590,6 @@ def add_subject(user_id, subject_name):
     cursor = conn.cursor()
     ph = placeholder()
 
-    # نتأكد إن المادة مش موجودة
     cursor.execute(
         f"SELECT id FROM user_subjects WHERE user_id = {ph} AND subject_name = {ph} AND is_active = 1",
         (user_id, subject_name)
@@ -693,7 +610,7 @@ def add_subject(user_id, subject_name):
 
 
 def delete_subject(user_id, subject_name):
-    """بيحذف مادة (يخليها inactive)"""
+    """بيحذف مادة"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
