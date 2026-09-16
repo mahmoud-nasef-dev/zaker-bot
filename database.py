@@ -477,3 +477,16 @@ def get_all_user_ids():
     rows = cursor.fetchall()
     conn.close()
     return [row[0] for row in rows]
+def get_all_users(limit=20):
+    """بيرجع آخر 20 مستخدم"""
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT user_id, first_name, username, points, level, plan, last_used
+        FROM users
+        ORDER BY last_used DESC
+        LIMIT ?
+    """, (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
