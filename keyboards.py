@@ -25,6 +25,7 @@ def main_menu(is_admin=False):
         input_field_placeholder="اختار من الأزرار..."
     )
 
+
 # ===== أزرار Inline =====
 def back_button():
     """زرار الرجوع"""
@@ -93,20 +94,12 @@ def account_menu():
         [InlineKeyboardButton("📊 إحصائياتي", callback_data="account_stats")],
         [InlineKeyboardButton("🎖️ إنجازاتي", callback_data="account_badges")],
         [InlineKeyboardButton("💎 ترقية الحساب", callback_data="account_upgrade")],
+        [InlineKeyboardButton("📚 موادي", callback_data="my_subjects")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
 
-def admin_menu():
-    """قائمة الأدمن"""
-    keyboard = [
-        [InlineKeyboardButton("📊 الإحصائيات", callback_data="admin_stats")],
-        [InlineKeyboardButton("👥 المستخدمين", callback_data="admin_users")],
-        [InlineKeyboardButton("📢 بث رسالة", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
 def analysis_options_menu():
     """قائمة خيارات التحليل بعد رفع PDF"""
     keyboard = [
@@ -119,6 +112,8 @@ def analysis_options_menu():
         [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
     ]
     return InlineKeyboardMarkup(keyboard)
+
+
 def points_menu():
     """قائمة النقاط"""
     keyboard = [
@@ -130,16 +125,6 @@ def points_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-
-def admin_menu():
-    """قائمة الأدمن"""
-    keyboard = [
-        [InlineKeyboardButton("📊 الإحصائيات", callback_data="admin_stats")],
-        [InlineKeyboardButton("👥 المستخدمين", callback_data="admin_users")],
-        [InlineKeyboardButton("📢 بث رسالة", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
 
 def admin_panel_menu():
     """لوحة تحكم الأدمن"""
@@ -159,5 +144,27 @@ def admin_user_actions(user_id):
         [InlineKeyboardButton("💎 إضافة نقاط", callback_data=f"admin_addpoints_{user_id}")],
         [InlineKeyboardButton("🚫 حظر", callback_data=f"admin_ban_{user_id}")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="admin_users")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+# ===== دوال المواد (جديد) =====
+def skip_subjects_button():
+    """زر تخطي إدخال المواد"""
+    keyboard = [
+        [InlineKeyboardButton("📚 اكتبهم دلوقتي", callback_data="enter_subjects")],
+        [InlineKeyboardButton("⏭️ تخطي دلوقتي", callback_data="skip_subjects")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def subjects_menu():
+    """قائمة إدارة المواد"""
+    keyboard = [
+        [InlineKeyboardButton("➕ ضيف مادة", callback_data="add_subject")],
+        [InlineKeyboardButton("📋 موادي", callback_data="list_subjects")],
+        [InlineKeyboardButton("🗑️ احذف مادة", callback_data="delete_subject_menu")],
+        [InlineKeyboardButton("🔄 مسح الكل", callback_data="clear_all_subjects")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
     ]
     return InlineKeyboardMarkup(keyboard)
