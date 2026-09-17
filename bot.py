@@ -46,6 +46,24 @@ model = genai.GenerativeModel("gemini-3.6-flash")
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 
+# ===== دالة آمنة لتعديل الرسائل =====
+async def safe_edit(query, text, parse_mode="Markdown", reply_markup=None):
+    """بتعدل الرسالة بأمان - بتتجاهل خطأ 'Message is not modified'"""
+    try:
+        await query.edit_message_text(
+            text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        error_str = str(e)
+        if "Message is not modified" in error_str:
+            # ده مش خطأ حقيقي، نتجاهله
+            print(f"ℹ️ Message not modified (تجاهل)")
+        else:
+            print(f"⚠️ خطأ في edit_message_text: {e}")
+
+
 # ===== دوال AI =====
 def translate_text(text, target_language="الإنجليزية"):
     prompt = f"إنت مترجم محترف. ترجم النص ده لـ {target_language} فقط، بدون أي إضافات:\n\n{text}"
@@ -196,7 +214,6 @@ def format_level_bar(points, level_info):
 
 
 def get_subject_display(subject_code):
-    """يحول كود الإجابة لاسم عربي"""
     mapping = {
         "morning": "🌅 الصبح (6-12)",
         "afternoon": "☀️ العصر (12-5)",
@@ -258,7 +275,10 @@ async def send_welcome(update_or_message, user, is_edit=False):
     is_admin = user.id in ADMIN_IDS
 
     if is_edit:
-        await update_or_message.edit_text(welcome, parse_mode="Markdown")
+        try:
+            await update_or_message.edit_text(welcome, parse_mode="Markdown")
+        except Exception as e:
+            print(f"⚠️ {e}")
     else:
         await update_or_message.reply_text(
             welcome,
@@ -475,7 +495,7 @@ async def subjects_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def analysis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /analysis - يعرض تحليل المستخدم"""
+    """أمر /analysis"""
     user = update.effective_user
     get_or_create_user(user.id, user.username, user.first_name)
 
@@ -525,24 +545,24 @@ async def handle_analysis_buttons(update: Update, context: ContextTypes.DEFAULT_
         context.user_data["analysis_step"] = 1
         context.user_data["analysis_answers"] = {}
 
-        await query.edit_message_text(
-            "🧠 *خليني أفهمك أكتر*\n\n"
-            "━━━━━━━━━━━━━━━\n\n"
-            "هجاوب على 6 أسئلة سريعة\n"
-            "وأطلعلك تقرير شخصي كامل عنك\n\n"
+        # ابدأ من السؤال 1 مباشرة
+        await safe_edit(
+            query,
+            "📊 *سؤال 1 من 6*\n\n"
+            "⏰ *إنت بتذاكر إمتى؟*\n\n"
             "━━━━━━━━━━━━━━━",
-            parse_mode="Markdown",
-            reply_markup=analysis_start_menu()
+            reply_markup=analysis_q1_time()
         )
         return
 
     if data == "analysis_cancel":
         await query.answer()
         context.user_data["in_analysis"] = False
-        await query.edit_message_text(
-            "❌ تم إلغاء التحليل\n\n"
-            "تقدر تبدأه في أي وقت من زر 🧠 حللني",
-            parse_mode="Markdown"
+
+        await safe_edit(
+            query,
+            "❌ *تم إلغاء التحليل*\n\n"
+            "تقدر تبدأه في أي وقت من زر 🧠 حللني"
         )
         return
 
@@ -579,9 +599,7 @@ async def handle_pdf_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     data = query.data
 
-    # تأكد إن الزر بتاع PDF
     if not data.startswith("pdf_"):
-        # لو مش بتاع PDF، روح للـ handler العام
         await button_handler(update, context)
         return
 
@@ -592,7 +610,7 @@ async def handle_pdf_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     pdf_text = context.user_data.get("pdf_text")
     if not pdf_text:
-        await query.edit_message_text("⚠️ الملف مش موجود. ارفعه تاني.")
+        await safe_edit(query, "⚠️ الملف مش موجود. ارفعه تاني.")
         return
 
     types = {
@@ -605,7 +623,7 @@ async def handle_pdf_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
     }
     type_name = types.get(analysis_type, "📝 التحليل")
 
-    await query.edit_message_text(f"⏳ جاري إعداد {type_name}...")
+    await safe_edit(query, f"⏳ جاري إعداد {type_name}...")
 
     try:
         user_subjects = get_user_subjects(user.id)
@@ -617,15 +635,15 @@ async def handle_pdf_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
         full_text = f"{type_name}:\n\n{result}"
 
         if len(full_text) <= 4000:
-            await query.edit_message_text(full_text)
+            await safe_edit(query, full_text)
         else:
-            await query.edit_message_text(full_text[:4000])
+            await safe_edit(query, full_text[:4000])
             await update.effective_chat.send_message(full_text[4000:])
 
         increment_usage(user.id, POINTS_REWARDS["pdf_analysis"])
 
     except Exception as e:
-        await query.edit_message_text(f"❌ حصل خطأ: {str(e)}")
+        await safe_edit(query, f"❌ حصل خطأ: {str(e)}")
 
 
 # ===== معالجة الأزرار العامة =====
@@ -638,7 +656,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ===== أزرار المواد =====
     if data == "skip_subjects":
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             "👍 تمام! تقدر تضيف موادك في أي وقت من:\n"
             "🏆 حسابي → 📚 موادي"
         )
@@ -651,14 +670,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "enter_subjects":
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             "📚 *اكتب موادك دلوقتي*\n\n"
             "اكتب كل مادة في سطر:\n"
             "`Algorithms`\n"
             "`Database`\n"
             "`Machine Learning`\n\n"
-            "📝 مستنيك...",
-            parse_mode="Markdown"
+            "📝 مستنيك..."
         )
         context.user_data["awaiting_subjects"] = True
         return
@@ -671,19 +690,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             subjects_list = "\n".join([f"{i+1}. {s}" for i, s in enumerate(subjects)])
             text = f"📚 *موادي ({len(subjects)}):*\n\n{subjects_list}"
 
-        await query.edit_message_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=subjects_menu()
-        )
+        await safe_edit(query, text, reply_markup=subjects_menu())
         return
 
     if data == "add_subject":
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             "➕ *ضيف مادة*\n\n"
             "اكتب اسم المادة (أو اكتبهم كلهم، كل مادة في سطر).\n\n"
-            "📝 مستنيك...",
-            parse_mode="Markdown"
+            "📝 مستنيك..."
         )
         context.user_data["awaiting_subjects"] = True
         return
@@ -696,20 +711,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             subjects_list = "\n".join([f"{i+1}. {s}" for i, s in enumerate(subjects)])
             text = f"📚 *موادي ({len(subjects)}):*\n\n{subjects_list}"
 
-        await query.edit_message_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=subjects_menu()
-        )
+        await safe_edit(query, text, reply_markup=subjects_menu())
         return
 
     if data == "delete_subject_menu":
         subjects = get_user_subjects(user.id)
         if not subjects:
-            await query.edit_message_text(
-                "📚 لسه مفيش مواد.",
-                reply_markup=subjects_menu()
-            )
+            await safe_edit(query, "📚 لسه مفيش مواد.", reply_markup=subjects_menu())
             return
 
         keyboard = []
@@ -719,9 +727,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
         keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="my_subjects")])
 
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             "🗑️ *اختار المادة اللي عايز تحذفها:*",
-            parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
@@ -729,25 +737,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("del_subj_"):
         subject_name = data.replace("del_subj_", "")
         delete_subject(user.id, subject_name)
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             f"✅ تم حذف: *{subject_name}*",
-            parse_mode="Markdown",
             reply_markup=subjects_menu()
         )
         return
 
     if data == "clear_all_subjects":
         clear_user_subjects(user.id)
-        await query.edit_message_text(
-            "✅ تم مسح كل المواد.",
-            reply_markup=subjects_menu()
-        )
+        await safe_edit(query, "✅ تم مسح كل المواد.", reply_markup=subjects_menu())
         return
 
     # ===== زر خطتي =====
     if data == "show_my_plan":
         if not has_analysis(user.id):
-            await query.edit_message_text(
+            await safe_edit(
+                query,
                 "⚠️ لسه محتاج تحليل الأول!",
                 reply_markup=analysis_needed_menu()
             )
@@ -767,74 +773,64 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⏳ _قريب إن شاء الله — خطة مذاكرة كاملة_ 🚧"
         )
 
-        await query.edit_message_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=back_button()
-        )
+        await safe_edit(query, text, reply_markup=back_button())
         return
 
     # ===== الأساسيات =====
     if data == "back_home":
-        await query.edit_message_text(
-            "🏠 *القائمة الرئيسية*\n\nاختار من الأزرار تحت 👇",
-            parse_mode="Markdown"
-        )
+        await safe_edit(query, "🏠 *القائمة الرئيسية*\n\nاختار من الأزرار تحت 👇")
         return
 
     if data == "upload_pdf":
-        await query.edit_message_text(
-            "📄 *ارفع ملف PDF دلوقتي*\n\nابعتلي الملف وأنا هحلله.",
-            parse_mode="Markdown"
-        )
+        await safe_edit(query, "📄 *ارفع ملف PDF دلوقتي*\n\nابعتلي الملف وأنا هحلله.")
         return
 
     if data == "upload_image":
-        await query.edit_message_text("📸 *ارفع صورة*\n\n_قريب إن شاء الله_ 🚧")
+        await safe_edit(query, "📸 *ارفع صورة*\n\n_قريب إن شاء الله_ 🚧")
         return
 
     if data == "quiz_from_pdf":
-        await query.edit_message_text("🎯 *كويز من PDF*\n\nارفع ملف PDF الأول.")
+        await safe_edit(query, "🎯 *كويز من PDF*\n\nارفع ملف PDF الأول.")
         return
 
     if data == "quiz_random":
-        await query.edit_message_text("🎲 *كويز عشوائي*\n\n_قريب إن شاء الله_ 🚧")
+        await safe_edit(query, "🎲 *كويز عشوائي*\n\n_قريب إن شاء الله_ 🚧")
         return
 
     if data == "quiz_subject":
-        await query.edit_message_text("📚 *كويز من مادة*\n\n_قريب إن شاء الله_ 🚧")
+        await safe_edit(query, "📚 *كويز من مادة*\n\n_قريب إن شاء الله_ 🚧")
         return
 
     if data == "quiz_daily":
-        await query.edit_message_text("🎁 *الكويز اليومي*\n\n_قريب إن شاء الله_ 🚧")
+        await safe_edit(query, "🎁 *الكويز اليومي*\n\n_قريب إن شاء الله_ 🚧")
         return
 
     if data == "explain_concept":
-        await query.edit_message_text("💡 *اشرحلي مفهوم*\n\nابعتلي اسم المفهوم.")
+        await safe_edit(query, "💡 *اشرحلي مفهوم*\n\nابعتلي اسم المفهوم.")
         return
 
     if data == "explain_term":
-        await query.edit_message_text("🔤 *اشرحلي مصطلح*\n\nابعتلي المصطلح.")
+        await safe_edit(query, "🔤 *اشرحلي مصطلح*\n\nابعتلي المصطلح.")
         return
 
     if data == "solve_problem":
-        await query.edit_message_text("🧮 *حل مسألة*\n\nابعتلي المسألة.")
+        await safe_edit(query, "🧮 *حل مسألة*\n\nابعتلي المسألة.")
         return
 
     if data == "translate_text":
-        await query.edit_message_text("🌍 *ترجمة نص*\n\nابعتلي النص.")
+        await safe_edit(query, "🌍 *ترجمة نص*\n\nابعتلي النص.")
         return
 
     if data == "translate_file":
-        await query.edit_message_text("📄 *ترجمة ملف*\n\nارفع الملف.")
+        await safe_edit(query, "📄 *ترجمة ملف*\n\nارفع الملف.")
         return
 
     if data == "summarize_text":
-        await query.edit_message_text("📝 *تلخيص نص*\n\nابعتلي النص.")
+        await safe_edit(query, "📝 *تلخيص نص*\n\nابعتلي النص.")
         return
 
     if data == "summarize_file":
-        await query.edit_message_text("📄 *تلخيص ملف*\n\nارفع الملف.")
+        await safe_edit(query, "📄 *تلخيص ملف*\n\nارفع الملف.")
         return
 
     if data == "account_info":
@@ -865,29 +861,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📚 المواد: {subjects_text}\n"
         )
 
-        await query.edit_message_text(text, parse_mode="Markdown")
+        await safe_edit(query, text)
         return
 
     if data == "account_stats":
-        await query.edit_message_text("📊 *إحصائياتك*\n\n_قريب إن شاء الله_ 🚧")
+        await safe_edit(query, "📊 *إحصائياتك*\n\n_قريب إن شاء الله_ 🚧")
         return
 
     if data == "account_badges":
-        await query.edit_message_text("🎖️ *إنجازاتك*\n\n_قريب إن شاء الله_ 🚧")
+        await safe_edit(query, "🎖️ *إنجازاتك*\n\n_قريب إن شاء الله_ 🚧")
         return
 
     if data == "account_upgrade":
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             f"💎 *ترقية الحساب*\n\n"
             f"للترقية تواصل مع:\n"
             f"👨‍💻 {DEVELOPER_NAME}\n"
-            f"📱 {DEVELOPER_USERNAME}",
-            parse_mode="Markdown"
+            f"📱 {DEVELOPER_USERNAME}"
         )
         return
 
     if data == "about":
-        await query.edit_message_text(ABOUT_MESSAGE, parse_mode="Markdown")
+        await safe_edit(query, ABOUT_MESSAGE)
         return
 
     # ===== لوحة التحكم (Admin) =====
@@ -909,20 +905,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for i, (name, points) in enumerate(stats["top_users"]):
                 text += f"{i+1}. {name or 'طالب'} — {points} 💎\n"
 
-        await query.edit_message_text(
-            text,
-            parse_mode="Markdown",
-            reply_markup=admin_panel_menu()
-        )
+        await safe_edit(query, text, reply_markup=admin_panel_menu())
         return
 
     if data == "admin_users" and user.id in ADMIN_IDS:
         users = get_all_users(20)
 
         if not users:
-            await query.edit_message_text(
+            await safe_edit(
+                query,
                 "👥 *آخر 20 مستخدم:*\n\nلسه مفيش مستخدمين 🚧",
-                parse_mode="Markdown",
                 reply_markup=admin_panel_menu()
             )
             return
@@ -937,11 +929,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text1 += f"{plan_emoji} *{first_name or 'مستخدم'}* — {points} 💎\n"
             text1 += f"   🆔 `{u_id}`\n\n"
 
-        await query.edit_message_text(
-            text1,
-            parse_mode="Markdown",
-            reply_markup=admin_panel_menu()
-        )
+        await safe_edit(query, text1, reply_markup=admin_panel_menu())
 
         if part2:
             text2 = f"(الجزء التاني من {len(part2)})\n\n"
@@ -955,11 +943,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "admin_broadcast" and user.id in ADMIN_IDS:
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             "📢 *بث رسالة*\n\n"
             "ابعتلي الرسالة اللي عايز تبعتها لكل المستخدمين.\n\n"
             "_ملاحظة: الميزة دي قريب إن شاء الله_ 🚧",
-            parse_mode="Markdown",
             reply_markup=admin_panel_menu()
         )
         return
@@ -982,9 +970,9 @@ async def show_next_question(query, context, step):
         subjects = get_user_subjects(user.id)
         text = "😰 *إيه أصعب مادة عليك؟*"
         markup = analysis_q4_hard_subject(subjects)
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             f"📊 *سؤال 4 من 6*\n\n{text}\n\n━━━━━━━━━━━━━━━",
-            parse_mode="Markdown",
             reply_markup=markup
         )
         return
@@ -995,9 +983,9 @@ async def show_next_question(query, context, step):
 
     if step in questions:
         question_text, markup = questions[step]
-        await query.edit_message_text(
+        await safe_edit(
+            query,
             f"📊 *سؤال {step} من 6*\n\n{question_text}\n\n━━━━━━━━━━━━━━━",
-            parse_mode="Markdown",
             reply_markup=markup
         )
         return
@@ -1006,10 +994,10 @@ async def show_next_question(query, context, step):
 # ===== دالة إنهاء التحليل =====
 async def finish_analysis(query, context, user):
     """بتخلص التحليل وتعمل التقرير"""
-    await query.edit_message_text(
+    await safe_edit(
+        query,
         "⏳ *جاري تحليل إجاباتك...*\n\n"
-        "استنى شوية، بعمل تقريرك 📊",
-        parse_mode="Markdown"
+        "استنى شوية، بعمل تقريرك 📊"
     )
 
     answers = context.user_data.get("analysis_answers", {})
@@ -1091,16 +1079,9 @@ async def finish_analysis(query, context, user):
     )
 
     if len(full_text) <= 4000:
-        await query.edit_message_text(
-            full_text,
-            parse_mode="Markdown",
-            reply_markup=analysis_result_menu()
-        )
+        await safe_edit(query, full_text, reply_markup=analysis_result_menu())
     else:
-        await query.edit_message_text(
-            full_text[:4000],
-            parse_mode="Markdown"
-        )
+        await safe_edit(query, full_text[:4000])
         await query.message.reply_text(
             full_text[4000:],
             parse_mode="Markdown",
@@ -1339,14 +1320,13 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
             context.user_data["analysis_step"] = 1
             context.user_data["analysis_answers"] = {}
 
+            # ابدأ من السؤال 1 مباشرة
             await update.message.reply_text(
-                "🧠 *خليني أفهمك أكتر*\n\n"
-                "━━━━━━━━━━━━━━━\n\n"
-                "هجاوب على 6 أسئلة سريعة\n"
-                "وأطلعلك تقرير شخصي كامل عنك\n\n"
+                "📊 *سؤال 1 من 6*\n\n"
+                "⏰ *إنت بتذاكر إمتى؟*\n\n"
                 "━━━━━━━━━━━━━━━",
                 parse_mode="Markdown",
-                reply_markup=analysis_start_menu()
+                reply_markup=analysis_q1_time()
             )
         return
 
@@ -1428,7 +1408,7 @@ def main():
     app.add_handler(CommandHandler("subjects", subjects_command))
     app.add_handler(CommandHandler("analysis", analysis_command))
 
-    # ترتيب مهم: التحليل قبل PDF قبل العام
+    # ترتيب مهم
     app.add_handler(CallbackQueryHandler(handle_analysis_buttons, pattern="^(analysis_|ans_)"))
     app.add_handler(CallbackQueryHandler(handle_pdf_buttons, pattern="^pdf_"))
     app.add_handler(CallbackQueryHandler(button_handler))
