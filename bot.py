@@ -56,7 +56,7 @@ load_dotenv()
 
 # Groq (الموديل الأساسي - سريع جداً)
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-GROQ_MODEL = "openai/gpt-oss-120b"
+GROQ_MODEL = "openai/gpt-oss-20b"
 # Gemini (احتياطي)
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 gemini_model = genai.GenerativeModel("gemini-3.6-flash")
@@ -67,6 +67,10 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 # ===== دالة AI موحدة (Groq + Gemini) =====
 def ai_generate(prompt, use_groq=True, max_tokens=4000):
     """بتوليد نص بـ Groq أو Gemini"""
+    # لو البرومبت كبير جداً، نقطعه
+    if len(prompt) > 25000:
+        prompt = prompt[:25000] + "..."
+
     if use_groq:
         try:
             response = groq_client.chat.completions.create(
@@ -82,15 +86,14 @@ def ai_generate(prompt, use_groq=True, max_tokens=4000):
         except Exception as e:
             print(f"⚠️ Groq فشل: {e}")
             print("⏳ بنجرب Gemini...")
-            use_groq = False
 
-    if not use_groq:
-        try:
-            response = gemini_model.generate_content(prompt)
-            return response.text
-        except Exception as e:
-            print(f"⚠️ Gemini فشل كمان: {e}")
-            return "❌ حصل خطأ في الاتصال بالـ AI. حاول تاني."
+    # Gemini (fallback)
+    try:
+        response = gemini_model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        print(f"⚠️ Gemini فشل كمان: {e}")
+        return "❌ حصل خطأ مؤقت في الاتصال بالـ AI. حاول تاني بعد دقيقة."
 
 
 # ===== دالة آمنة لتعديل الرسائل =====
@@ -147,7 +150,7 @@ def clean_text(text):
 
 
 # ===== دالة تقسيم النص =====
-def chunk_pdf_text(pdf_text, chunk_size=15000):
+def chunk_pdf_text(pdf_text, chunk_size=6000):
     """بتقسم النص لأجزاء"""
     chunks = []
     for i in range(0, len(pdf_text), chunk_size):
@@ -358,12 +361,12 @@ def generate_chapters(pdf_text, user_college=None, user_subjects=None, learning_
         except Exception as e:
             print(f"⚠️ خطأ في قراءة JSON: {e}")
 
-    # لو النص كبير — نقسم
-    chunks = chunk_pdf_text(pdf_text, 15000)
+        # لو النص كبير — نقسم
+    chunks = chunk_pdf_text(pdf_text, 6000)
     print(f"📊 الملف كبير — بنقسمه لـ {len(chunks)} أجزاء")
 
     all_chapters = []
-    for i, chunk in enumerate(chunks[:5]):  # أول 5 أجزاء بس (75,000 حرف)
+    for i, chunk in enumerate(chunks[:4]):  # أول 4 أجزاء بس (24,000 حرف)
         prompt = f"""إنت "ذاكر".
 
 {context}

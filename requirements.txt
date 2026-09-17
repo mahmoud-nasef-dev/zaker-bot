@@ -7,3 +7,4 @@ arabic-reshaper
 python-bidi
 psycopg2-binary
 groq
+fonttools
