@@ -4,3 +4,4 @@ __pycache__/
 users.db
 temp_*.pdf
 report_*.pdf
+test_*.py

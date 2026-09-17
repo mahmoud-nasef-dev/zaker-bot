@@ -56,8 +56,7 @@ load_dotenv()
 
 # Groq (الموديل الأساسي - سريع جداً)
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-GROQ_MODEL = "llama-3.3-70b-versatile"
-
+GROQ_MODEL = "openai/gpt-oss-120b"
 # Gemini (احتياطي)
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 gemini_model = genai.GenerativeModel("gemini-3.6-flash")
