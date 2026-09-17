@@ -282,7 +282,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     get_or_create_user(user.id, user.username, user.first_name, invited_by)
 
-    # تحقق من المواد
     if not has_subjects(user.id):
         await update.message.reply_text(
             f"أهلاً *{user.first_name}*! 👋\n\n"
@@ -301,7 +300,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # تحقق من الكلية
     user_college = get_user_college(user.id)
     if not user_college:
         context.user_data["awaiting_college"] = True
@@ -491,7 +489,6 @@ async def analysis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # اعرض التحليل
     analysis = get_analysis(user.id)
 
     text = (
@@ -513,17 +510,17 @@ async def analysis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ===== معالجة الأزرار Inline =====
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ===== معالجة أزرار التحليل الشخصي =====
+async def handle_analysis_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """بتتعامل مع أزرار التحليل الشخصي بس"""
     query = update.callback_query
-    await query.answer()
-
     data = query.data
     user = query.from_user
 
-    # ===== التحليل الشخصي =====
+    # ===== بداية التحليل =====
     if data == "analysis_begin" or data == "analysis_restart":
-        # بدء التحليل
+        await query.answer()
+
         context.user_data["in_analysis"] = True
         context.user_data["analysis_step"] = 1
         context.user_data["analysis_answers"] = {}
@@ -540,6 +537,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "analysis_cancel":
+        await query.answer()
         context.user_data["in_analysis"] = False
         await query.edit_message_text(
             "❌ تم إلغاء التحليل\n\n"
@@ -548,8 +546,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ===== تخطي السؤال =====
     if data == "ans_skip":
-        # تخطي السؤال
+        await query.answer()
         step = context.user_data.get("analysis_step", 1)
         answers = context.user_data.get("analysis_answers", {})
         answers[f"q{step}"] = "skip"
@@ -558,22 +557,84 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_next_question(query, context, step + 1)
         return
 
-    # إجابات الأسئلة
+    # ===== إجابات الأسئلة =====
     if data.startswith("ans_q"):
-        # استخرج رقم السؤال والإجابة
+        await query.answer()
         parts = data.replace("ans_q", "").split("_", 1)
         step = int(parts[0])
         answer = parts[1] if len(parts) > 1 else ""
 
-        # احفظ الإجابة
         answers = context.user_data.get("analysis_answers", {})
         answers[f"q{step}"] = answer
         context.user_data["analysis_answers"] = answers
         context.user_data["analysis_step"] = step + 1
 
-        # اعرض السؤال التالي
         await show_next_question(query, context, step + 1)
         return
+
+
+# ===== معالجة أزرار PDF =====
+async def handle_pdf_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """بتتعامل مع أزرار تحليل PDF بس"""
+    query = update.callback_query
+    data = query.data
+
+    # تأكد إن الزر بتاع PDF
+    if not data.startswith("pdf_"):
+        # لو مش بتاع PDF، روح للـ handler العام
+        await button_handler(update, context)
+        return
+
+    await query.answer()
+    user = query.from_user
+
+    analysis_type = data.replace("pdf_", "")
+
+    pdf_text = context.user_data.get("pdf_text")
+    if not pdf_text:
+        await query.edit_message_text("⚠️ الملف مش موجود. ارفعه تاني.")
+        return
+
+    types = {
+        "summary": "📝 الملخص",
+        "explanation": "📚 الشرح التفصيلي",
+        "terms": "🔤 المصطلحات",
+        "quiz": "🎯 الكويز",
+        "examples": "💡 الأمثلة",
+        "problems": "🧮 المسائل",
+    }
+    type_name = types.get(analysis_type, "📝 التحليل")
+
+    await query.edit_message_text(f"⏳ جاري إعداد {type_name}...")
+
+    try:
+        user_subjects = get_user_subjects(user.id)
+        user_college = get_user_college(user.id)
+
+        result = analyze_pdf_content(pdf_text, analysis_type, user_subjects, user_college)
+        result = clean_text(result)
+
+        full_text = f"{type_name}:\n\n{result}"
+
+        if len(full_text) <= 4000:
+            await query.edit_message_text(full_text)
+        else:
+            await query.edit_message_text(full_text[:4000])
+            await update.effective_chat.send_message(full_text[4000:])
+
+        increment_usage(user.id, POINTS_REWARDS["pdf_analysis"])
+
+    except Exception as e:
+        await query.edit_message_text(f"❌ حصل خطأ: {str(e)}")
+
+
+# ===== معالجة الأزرار العامة =====
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    user = query.from_user
 
     # ===== أزرار المواد =====
     if data == "skip_subjects":
@@ -692,10 +753,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # اعرض الخطة
         analysis = get_analysis(user.id)
         subjects = get_user_subjects(user.id)
-
         subjects_text = "، ".join(subjects) if subjects else "لسه"
 
         text = (
@@ -911,7 +970,6 @@ async def show_next_question(query, context, step):
     """بتعرض السؤال التالي"""
     user = query.from_user
 
-    # الأسئلة
     questions = {
         1: ("⏰ *إنت بتذاكر إمتى؟*", analysis_q1_time()),
         2: ("⏱️ *بتقدر تركز كام دقيقة؟*", analysis_q2_duration()),
@@ -920,7 +978,6 @@ async def show_next_question(query, context, step):
         6: ("📅 *امتحاناتك إمتى؟*", analysis_q6_exams()),
     }
 
-    # السؤال 4 مختلف (حسب المواد)
     if step == 4:
         subjects = get_user_subjects(user.id)
         text = "😰 *إيه أصعب مادة عليك؟*"
@@ -932,7 +989,6 @@ async def show_next_question(query, context, step):
         )
         return
 
-    # لو خلصنا الأسئلة
     if step > 6:
         await finish_analysis(query, context, user)
         return
@@ -958,7 +1014,6 @@ async def finish_analysis(query, context, user):
 
     answers = context.user_data.get("analysis_answers", {})
 
-    # استخرج الإجابات
     study_time = answers.get("q1", "skip")
     focus_duration = answers.get("q2", "skip")
     learning_style = answers.get("q3", "skip")
@@ -966,13 +1021,11 @@ async def finish_analysis(query, context, user):
     goal = answers.get("q5", "skip")
     exam_timing = answers.get("q6", "skip")
 
-    # لو الإجابة skip في المواد، نجيب مواد المستخدم
     if hard_subject == "skip":
         subjects = get_user_subjects(user.id)
         if subjects:
             hard_subject = subjects[0]
 
-    # نحلل بـ Gemini
     try:
         prompt = f"""
 إنت "ذاكر" - مدرب دراسي.
@@ -1011,20 +1064,16 @@ async def finish_analysis(query, context, user):
         analysis_result = "حصل خطأ في التحليل. حاول تاني."
         print(f"Error: {e}")
 
-    # احفظ في قاعدة البيانات
     save_analysis(
         user.id,
         study_time, focus_duration, learning_style,
         hard_subject, goal, exam_timing, analysis_result
     )
 
-    # ضيف نقاط
     add_points(user.id, POINTS_REWARDS["analysis_done"])
 
-    # اقفل التحليل
     context.user_data["in_analysis"] = False
 
-    # اعرض التقرير
     full_text = (
         f"🎉 *تحليلك جاهز!*\n\n"
         f"━━━━━━━━━━━━━━━\n\n"
@@ -1041,7 +1090,6 @@ async def finish_analysis(query, context, user):
         f"💎 *كسبت {POINTS_REWARDS['analysis_done']} نقطة!*"
     )
 
-    # لو الرسالة طويلة، نقسمها
     if len(full_text) <= 4000:
         await query.edit_message_text(
             full_text,
@@ -1058,58 +1106,6 @@ async def finish_analysis(query, context, user):
             parse_mode="Markdown",
             reply_markup=analysis_result_menu()
         )
-
-
-# ===== معالجة اختيار نوع التحليل =====
-async def handle_pdf_options(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-
-    if not data.startswith("analysis_"):
-        await button_handler(update, context)
-        return
-
-    await query.answer()
-    user = query.from_user
-
-    analysis_type = data.replace("analysis_", "")
-
-    pdf_text = context.user_data.get("pdf_text")
-    if not pdf_text:
-        await query.edit_message_text("⚠️ الملف مش موجود. ارفعه تاني.")
-        return
-
-    types = {
-        "summary": "📝 الملخص",
-        "explanation": "📚 الشرح التفصيلي",
-        "terms": "🔤 المصطلحات",
-        "quiz": "🎯 الكويز",
-        "examples": "💡 الأمثلة",
-        "problems": "🧮 المسائل",
-    }
-    type_name = types.get(analysis_type, "📝 التحليل")
-
-    await query.edit_message_text(f"⏳ جاري إعداد {type_name}...")
-
-    try:
-        user_subjects = get_user_subjects(user.id)
-        user_college = get_user_college(user.id)
-
-        result = analyze_pdf_content(pdf_text, analysis_type, user_subjects, user_college)
-        result = clean_text(result)
-
-        full_text = f"{type_name}:\n\n{result}"
-
-        if len(full_text) <= 4000:
-            await query.edit_message_text(full_text)
-        else:
-            await query.edit_message_text(full_text[:4000])
-            await update.effective_chat.send_message(full_text[4000:])
-
-        increment_usage(user.id, POINTS_REWARDS["pdf_analysis"])
-
-    except Exception as e:
-        await query.edit_message_text(f"❌ حصل خطأ: {str(e)}")
 
 
 # ===== معالجة PDF =====
@@ -1257,17 +1253,13 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
     text = update.message.text
     user = update.effective_user
 
-    # ===== لو في عملية إدخال =====
     if context.user_data.get("awaiting_subjects") or context.user_data.get("awaiting_college"):
         await handle_message(update, context)
         return
 
-    # ===== لو المستخدم في التحليل =====
     if context.user_data.get("in_analysis"):
-        # متعملش حاجة، التحليل شغال
         return
 
-    # ===== الأزرار الأساسية =====
     if text == "📄 تحليل PDF":
         await update.message.reply_text(
             "📄 *ارفع ملف PDF دلوقتي*\n\nابعتلي الملف وأنا هحلله.",
@@ -1339,13 +1331,10 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         await subjects_command(update, context)
         return
 
-    # ===== الأزرار الجديدة =====
     if text == "🧠 حللني":
         if has_analysis(user.id):
-            # عنده تحليل → اعرضه
             await analysis_command(update, context)
         else:
-            # مفيش → ابدأ التحليل
             context.user_data["in_analysis"] = True
             context.user_data["analysis_step"] = 1
             context.user_data["analysis_answers"] = {}
@@ -1375,7 +1364,6 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
-        # عنده تحليل → اعرض الخطة
         analysis = get_analysis(user.id)
         subjects = get_user_subjects(user.id)
         subjects_text = "، ".join(subjects) if subjects else "لسه"
@@ -1413,7 +1401,6 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
             )
         return
 
-    # ===== لو مفيش زرار مطابق → معالجة كـ نص =====
     await handle_message(update, context)
 
 
@@ -1440,8 +1427,12 @@ def main():
     app.add_handler(CommandHandler("invite", invite_command))
     app.add_handler(CommandHandler("subjects", subjects_command))
     app.add_handler(CommandHandler("analysis", analysis_command))
-    app.add_handler(CallbackQueryHandler(handle_pdf_options))
+
+    # ترتيب مهم: التحليل قبل PDF قبل العام
+    app.add_handler(CallbackQueryHandler(handle_analysis_buttons, pattern="^(analysis_|ans_)"))
+    app.add_handler(CallbackQueryHandler(handle_pdf_buttons, pattern="^pdf_"))
     app.add_handler(CallbackQueryHandler(button_handler))
+
     app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reply_buttons))
 

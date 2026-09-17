@@ -125,14 +125,14 @@ def account_menu():
 
 
 def analysis_options_menu():
-    """قائمة خيارات التحليل بعد رفع PDF"""
+    """قائمة خيارات تحليل PDF (مختلفة عن التحليل الشخصي)"""
     keyboard = [
-        [InlineKeyboardButton("📝 ملخص سريع", callback_data="analysis_summary")],
-        [InlineKeyboardButton("📚 شرح تفصيلي", callback_data="analysis_explanation")],
-        [InlineKeyboardButton("🔤 مصطلحات", callback_data="analysis_terms")],
-        [InlineKeyboardButton("🎯 كويز تفاعلي", callback_data="analysis_quiz")],
-        [InlineKeyboardButton("💡 أمثلة عملية", callback_data="analysis_examples")],
-        [InlineKeyboardButton("🧮 تمارين ومسائل", callback_data="analysis_problems")],
+        [InlineKeyboardButton("📝 ملخص سريع", callback_data="pdf_summary")],
+        [InlineKeyboardButton("📚 شرح تفصيلي", callback_data="pdf_explanation")],
+        [InlineKeyboardButton("🔤 مصطلحات", callback_data="pdf_terms")],
+        [InlineKeyboardButton("🎯 كويز تفاعلي", callback_data="pdf_quiz")],
+        [InlineKeyboardButton("💡 أمثلة عملية", callback_data="pdf_examples")],
+        [InlineKeyboardButton("🧮 تمارين ومسائل", callback_data="pdf_problems")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -173,7 +173,7 @@ def admin_user_actions(user_id):
 
 
 # ============================================
-# ===== أزرار التحليل الشخصي (جديد) =====
+# ===== أزرار التحليل الشخصي =====
 # ============================================
 
 def analysis_start_menu():
@@ -226,13 +226,11 @@ def analysis_q4_hard_subject(subjects):
     keyboard = []
 
     if subjects and len(subjects) > 0:
-        # نستخدم مواد المستخدم
         for subject in subjects[:4]:
             keyboard.append([
                 InlineKeyboardButton(f"📚 {subject}", callback_data=f"ans_q4_subj_{subject}")
             ])
     else:
-        # مواد عامة
         keyboard = [
             [InlineKeyboardButton("🔤 عربي", callback_data="ans_q4_subj_عربي")],
             [InlineKeyboardButton("🌍 إنجليزي", callback_data="ans_q4_subj_إنجليزي")],
