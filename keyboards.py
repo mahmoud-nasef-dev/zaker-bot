@@ -13,7 +13,8 @@ def main_menu(is_admin=False):
         [KeyboardButton("🌍 ترجمة"), KeyboardButton("📝 تلخيص")],
         [KeyboardButton("💎 نقاطي"), KeyboardButton("🎁 هدية يومية")],
         [KeyboardButton("🏆 المتصدرين"), KeyboardButton("👥 دعوة أصدقاء")],
-        [KeyboardButton("📚 موادي")],
+        [KeyboardButton("📚 موادي"), KeyboardButton("🧠 حللني")],
+        [KeyboardButton("📊 خطتي"), KeyboardButton("🏆 إنجازاتي")],
     ]
 
     if is_admin:

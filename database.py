@@ -20,7 +20,6 @@ else:
 
 # ===== دوال مساعدة =====
 def get_connection():
-    """بترجع اتصال بقاعدة البيانات"""
     if USE_POSTGRES:
         return psycopg2.connect(DATABASE_URL)
     else:
@@ -28,7 +27,6 @@ def get_connection():
 
 
 def placeholder():
-    """بترجع placeholder حسب نوع القاعدة"""
     return "%s" if USE_POSTGRES else "?"
 
 
@@ -55,7 +53,6 @@ LEVELS = [
 
 
 def get_level_info(points):
-    """بيرجع معلومات المستوى حسب النقاط"""
     for level in LEVELS:
         if level["min_points"] <= points < level["max_points"]:
             return level
@@ -64,11 +61,9 @@ def get_level_info(points):
 
 # ===== إنشاء قاعدة البيانات =====
 def init_db():
-    """بيبدأ قاعدة البيانات لو مش موجودة"""
     conn = get_connection()
     cursor = conn.cursor()
 
-    # جدول المستخدمين
     if USE_POSTGRES:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -86,7 +81,8 @@ def init_db():
                 last_daily_claim TEXT,
                 invited_by BIGINT DEFAULT NULL,
                 invited_count INTEGER DEFAULT 0,
-                college TEXT DEFAULT NULL
+                college TEXT DEFAULT NULL,
+                onboarding_done INTEGER DEFAULT 0
             )
         """)
     else:
@@ -106,11 +102,11 @@ def init_db():
                 last_daily_claim TEXT,
                 invited_by INTEGER DEFAULT NULL,
                 invited_count INTEGER DEFAULT 0,
-                college TEXT DEFAULT NULL
+                college TEXT DEFAULT NULL,
+                onboarding_done INTEGER DEFAULT 0
             )
         """)
 
-    # جدول مواد المستخدم
     if USE_POSTGRES:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_subjects (
@@ -139,7 +135,6 @@ def init_db():
 
 # ===== دوال المستخدمين =====
 def get_or_create_user(user_id, username, first_name, invited_by=None):
-    """بيجيب المستخدم أو بيعمله واحد جديد"""
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -178,7 +173,7 @@ def get_or_create_user(user_id, username, first_name, invited_by=None):
         return {
             "user_id": user_id, "plan": plan, "daily_requests": 0,
             "total_requests": 0, "points": 0, "level": 1,
-            "daily_streak": 0, "is_new": True
+            "daily_streak": 0, "is_new": True, "onboarding_done": False
         }
 
     last_used = user[4]
@@ -195,15 +190,49 @@ def get_or_create_user(user_id, username, first_name, invited_by=None):
     cursor.close()
     conn.close()
 
+    # onboarding_done index = 15
+    onboarding = bool(user[15]) if len(user) > 15 else False
+
     return {
         "user_id": user[0], "plan": user[7], "daily_requests": daily_requests,
         "total_requests": user[5], "points": user[8], "level": user[9],
-        "daily_streak": user[10], "is_new": False
+        "daily_streak": user[10], "is_new": False, "onboarding_done": onboarding
     }
 
 
+def complete_onboarding(user_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    cursor.execute(
+        f"UPDATE users SET onboarding_done = 1 WHERE user_id = {ph}",
+        (user_id,)
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def is_onboarding_done(user_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    cursor.execute(
+        f"SELECT onboarding_done FROM users WHERE user_id = {ph}",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if row:
+        return bool(row[0])
+    return False
+
+
 def set_user_college(user_id, college):
-    """بيحفظ كلية المستخدم"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -218,7 +247,6 @@ def set_user_college(user_id, college):
 
 
 def get_user_college(user_id):
-    """بيرجع كلية المستخدم"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -235,7 +263,6 @@ def get_user_college(user_id):
 
 # ===== دوال النقاط =====
 def add_points(user_id, amount):
-    """بيضيف نقاط للمستخدم"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -263,7 +290,6 @@ def add_points(user_id, amount):
 
 
 def get_user_points(user_id):
-    """بيرجع نقاط المستخدم"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -282,7 +308,6 @@ def get_user_points(user_id):
 
 
 def increment_usage(user_id, points=0):
-    """بيزود عدد الاستخدامات + النقاط"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -314,7 +339,6 @@ def increment_usage(user_id, points=0):
 
 
 def check_limit(user_id):
-    """بيتأكد إن المستخدم لسه عنده استخدامات متاحة"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -351,7 +375,6 @@ def check_limit(user_id):
 
 
 def get_user_plan(user_id):
-    """بيرجع خطة المستخدم"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -367,7 +390,6 @@ def get_user_plan(user_id):
 
 
 def set_user_plan(user_id, plan):
-    """بيغير خطة المستخدم"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -383,7 +405,6 @@ def set_user_plan(user_id, plan):
 
 # ===== الهدية اليومية =====
 def claim_daily_gift(user_id):
-    """بيحاول يستلم الهدية اليومية"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -469,7 +490,6 @@ def claim_daily_gift(user_id):
 
 # ===== المتصدرين =====
 def get_leaderboard(limit=10):
-    """بيرجع أعلى 10 مستخدمين"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -489,7 +509,6 @@ def get_leaderboard(limit=10):
 
 # ===== الإحصائيات =====
 def get_detailed_stats():
-    """إحصائيات مفصلة"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -537,7 +556,6 @@ def get_detailed_stats():
 
 
 def get_all_users(limit=20):
-    """بيرجع آخر 20 مستخدم"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -556,7 +574,6 @@ def get_all_users(limit=20):
 
 
 def get_all_user_ids():
-    """بيرجع كل الـ user_ids"""
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -569,7 +586,6 @@ def get_all_user_ids():
 
 # ===== دوال المواد =====
 def get_user_subjects(user_id):
-    """بيرجع مواد المستخدم"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -585,7 +601,6 @@ def get_user_subjects(user_id):
 
 
 def add_subject(user_id, subject_name):
-    """بيضيف مادة للمستخدم"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -610,7 +625,6 @@ def add_subject(user_id, subject_name):
 
 
 def delete_subject(user_id, subject_name):
-    """بيحذف مادة"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -625,7 +639,6 @@ def delete_subject(user_id, subject_name):
 
 
 def clear_user_subjects(user_id):
-    """بيحذف كل مواد المستخدم"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -640,7 +653,6 @@ def clear_user_subjects(user_id):
 
 
 def has_subjects(user_id):
-    """بيتحقق لو المستخدم عنده مواد"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()

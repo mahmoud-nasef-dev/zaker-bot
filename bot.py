@@ -22,7 +22,8 @@ from database import (
     get_all_users, get_all_user_ids,
     get_user_subjects, add_subject, delete_subject,
     clear_user_subjects, has_subjects,
-    set_user_college, get_user_college
+    set_user_college, get_user_college,
+    complete_onboarding, is_onboarding_done
 )
 from keyboards import (
     main_menu, pdf_menu, quiz_menu, explain_menu,
@@ -66,20 +67,18 @@ def analyze_pdf_content(text, analysis_type="summary", user_subjects=None, user_
     if len(text) > 15000:
         text = text[:15000] + "..."
 
-    # نبني سياق المواد والكلية
-    context_parts = []
-    context_parts.append("إنت مساعد طالب جامعي.")
-    
+    context_parts = ["إنت مساعد طالب جامعي."]
+
     if user_college:
         context_parts.append(f"الطالب في كلية: {user_college}.")
-    
+
     if user_subjects:
         subjects_str = ", ".join(user_subjects)
         context_parts.append(f"مواد الطالب: {subjects_str}.")
         context_parts.append("خلي أمثلتك وشرحك يناسب الكلية والمواد دي.")
     else:
         context_parts.append("إنت مساعد طالب جامعي في أي كلية أو مادة.")
-    
+
     subjects_context = "\n".join(context_parts)
 
     prompts = {
@@ -209,6 +208,52 @@ def format_level_bar(points, level_info):
     return f"{bar} {percent}%"
 
 
+# ===== دالة الترحيب =====
+async def send_welcome(update_or_message, user, is_edit=False):
+    """بتبعت رسالة الترحيب الرئيسية"""
+    plan = get_user_plan(user.id)
+    allowed, remaining = check_limit(user.id)
+    points, level = get_user_points(user.id)
+    level_info = get_level_info(points)
+    subjects = get_user_subjects(user.id)
+    college = get_user_college(user.id)
+
+    plan_names = {
+        "free": "🆓 مجاني",
+        "premium": "⭐ مميز",
+        "admin": "👑 أدمن",
+    }
+
+    subjects_text = "، ".join(subjects[:3]) if subjects else "مفيش"
+    if len(subjects) > 3:
+        subjects_text += f" + {len(subjects)-3}"
+
+    welcome = (
+        f"أهلاً *{user.first_name}*! 👋\n\n"
+        f"🎓 *ذاكر* - مساعدك الدراسي\n\n"
+        f"💎 *نقاطك:* {points}\n"
+        f"🏆 *مستواك:* {level_info['name']}\n"
+        f"👤 *حسابك:* {plan_names.get(plan, 'مجاني')}\n"
+        f"📊 *متبقي اليوم:* {remaining} استخدام\n"
+        f"🎓 *كليتك:* {college or 'لسه'}\n"
+        f"📚 *موادك:* {subjects_text}\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"*اختار من الأزرار تحت* 👇"
+    )
+
+    is_admin = user.id in ADMIN_IDS
+    reply_markup = main_menu(is_admin=is_admin)
+
+    if is_edit:
+        await update_or_message.edit_text(welcome, parse_mode="Markdown")
+    else:
+        await update_or_message.reply_text(
+            welcome,
+            parse_mode="Markdown",
+            reply_markup=reply_markup
+        )
+
+
 # ===== الأوامر =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -256,43 +301,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # خلص onboarding
+    complete_onboarding(user.id)
+
     # ترحيب عادي
-    plan = get_user_plan(user.id)
-    allowed, remaining = check_limit(user.id)
-    points, level = get_user_points(user.id)
-    level_info = get_level_info(points)
-    subjects = get_user_subjects(user.id)
-
-    plan_names = {
-        "free": "🆓 مجاني",
-        "premium": "⭐ مميز",
-        "admin": "👑 أدمن",
-    }
-
-    subjects_text = "، ".join(subjects[:3]) if subjects else "مفيش"
-    if len(subjects) > 3:
-        subjects_text += f" + {len(subjects)-3}"
-
-    welcome = (
-        f"أهلاً *{user.first_name}*! 👋\n\n"
-        f"🎓 *ذاكر* - مساعدك الدراسي\n\n"
-        f"💎 *نقاطك:* {points}\n"
-        f"🏆 *مستواك:* {level_info['name']}\n"
-        f"👤 *حسابك:* {plan_names.get(plan, 'مجاني')}\n"
-        f"📊 *متبقي اليوم:* {remaining} استخدام\n"
-        f"🎓 *كليتك:* {user_college}\n"
-        f"📚 *موادك:* {subjects_text}\n\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"*اختار من الأزرار تحت* 👇"
-    )
-
-    is_admin = user.id in ADMIN_IDS
-
-    await update.message.reply_text(
-        welcome,
-        parse_mode="Markdown",
-        reply_markup=main_menu(is_admin=is_admin)
-    )
+    await send_welcome(update.message, user)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -910,9 +923,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data["awaiting_college"] = True
         else:
             await update.message.reply_text(
-                "⚠️ المواد دي موجودة بالفعل.",
-                reply_markup=main_menu(is_admin=(user.id in ADMIN_IDS))
+                "⚠️ المواد دي موجودة بالفعل.\n\n"
+                "🎓 *في أي كلية بتدرس؟*\n"
+                "اكتب اسم كليتك:",
+                parse_mode="Markdown"
             )
+            context.user_data["awaiting_college"] = True
         return
 
     # ===== إدخال الكلية =====
@@ -920,6 +936,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         college = text.strip()
         context.user_data["awaiting_college"] = False
         set_user_college(user.id, college)
+        complete_onboarding(user.id)
 
         await update.message.reply_text(
             f"🎉 *تمام! كلية: {college}*\n\n"
@@ -931,7 +948,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ===== المعالجة العادية =====
+    # ===== المعالجة العادية (ترجمة + تلخيص) =====
     allowed, remaining = check_limit(user.id)
     if not allowed:
         await update.message.reply_text(
@@ -970,6 +987,7 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         await handle_message(update, context)
         return
 
+    # ===== الأزرار الأساسية =====
     if text == "📄 تحليل PDF":
         await update.message.reply_text(
             "📄 *ارفع ملف PDF دلوقتي*\n\nابعتلي الملف وأنا هحلله.",
@@ -1041,6 +1059,28 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         await subjects_command(update, context)
         return
 
+    # ===== الأزرار الجديدة (للمرحلة 1 و 2) =====
+    if text == "🧠 حللني":
+        await update.message.reply_text(
+            "🧠 *التحليل الشخصي*\n\n"
+            "_قريب إن شاء الله — هنحللك ونديك خطة مذاكرة مخصصة_ 🚧"
+        )
+        return
+
+    if text == "📊 خطتي":
+        await update.message.reply_text(
+            "📊 *خطة المذاكرة*\n\n"
+            "_قريب إن شاء الله_ 🚧"
+        )
+        return
+
+    if text == "🏆 إنجازاتي":
+        await update.message.reply_text(
+            "🏆 *إنجازاتك*\n\n"
+            "_قريب إن شاء الله_ 🚧"
+        )
+        return
+
     if text == "🎛️ لوحة التحكم":
         if user.id in ADMIN_IDS:
             await update.message.reply_text(
@@ -1050,6 +1090,7 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
             )
         return
 
+    # ===== لو مفيش زرار مطابق → معالجة كـ نص =====
     await handle_message(update, context)
 
 
