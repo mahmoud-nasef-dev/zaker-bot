@@ -40,6 +40,8 @@ POINTS_REWARDS = {
     "streak_bonus_7": 50,
     "streak_bonus_30": 500,
     "analysis_done": 30,
+    "pomodoro_session": 20,
+    "pomodoro_4_sessions": 50,
 }
 
 # ===== المستويات =====
@@ -146,7 +148,7 @@ def init_db():
             )
         """)
 
-    # ===== جدول user_analysis (جديد) =====
+    # ===== جدول user_analysis =====
     if USE_POSTGRES:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_analysis (
@@ -175,6 +177,52 @@ def init_db():
                 exam_timing TEXT,
                 analysis_result TEXT,
                 analysis_date TEXT
+            )
+        """)
+
+    # ===== جدول study_plans (جديد) =====
+    if USE_POSTGRES:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS study_plans (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT UNIQUE NOT NULL,
+                plan_text TEXT,
+                plan_json TEXT,
+                created_date TEXT,
+                updated_date TEXT
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS study_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER UNIQUE NOT NULL,
+                plan_text TEXT,
+                plan_json TEXT,
+                created_date TEXT,
+                updated_date TEXT
+            )
+        """)
+
+    # ===== جدول pomodoro_sessions (جديد) =====
+    if USE_POSTGRES:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pomodoro_sessions (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                subject TEXT,
+                duration INTEGER,
+                session_date TEXT
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pomodoro_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                subject TEXT,
+                duration INTEGER,
+                session_date TEXT
             )
         """)
 
@@ -263,24 +311,6 @@ def complete_onboarding(user_id):
     conn.commit()
     cursor.close()
     conn.close()
-
-
-def is_onboarding_done(user_id):
-    conn = get_connection()
-    cursor = conn.cursor()
-    ph = placeholder()
-
-    cursor.execute(
-        f"SELECT onboarding_done FROM users WHERE user_id = {ph}",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-
-    if row:
-        return bool(row[0])
-    return False
 
 
 def set_user_college(user_id, college):
@@ -724,25 +754,19 @@ def has_subjects(user_id):
     return count > 0
 
 
-# ============================================
-# ===== دوال التحليل الشخصي (جديد) =====
-# ============================================
-
+# ===== دوال التحليل الشخصي =====
 def save_analysis(user_id, study_time, focus_duration, learning_style, hard_subject, goal, exam_timing, analysis_result):
-    """بيحفظ تحليل المستخدم"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # امسح التحليل القديم لو موجود
     cursor.execute(
         f"DELETE FROM user_analysis WHERE user_id = {ph}",
         (user_id,)
     )
 
-    # ضيف التحليل الجديد
     cursor.execute(
         f"""INSERT INTO user_analysis 
             (user_id, study_time, focus_duration, learning_style, hard_subject, goal, exam_timing, analysis_result, analysis_date)
@@ -756,7 +780,6 @@ def save_analysis(user_id, study_time, focus_duration, learning_style, hard_subj
 
 
 def get_analysis(user_id):
-    """بيرجع تحليل المستخدم"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -786,7 +809,6 @@ def get_analysis(user_id):
 
 
 def has_analysis(user_id):
-    """بيتحقق لو المستخدم عمل التحليل"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -799,3 +821,155 @@ def has_analysis(user_id):
     cursor.close()
     conn.close()
     return count > 0
+
+
+# ============================================
+# ===== دوال خطة المذاكرة (جديد - المرحلة 2) =====
+# ============================================
+
+def save_study_plan(user_id, plan_text, plan_json=None):
+    """بيحفظ خطة المذاكرة"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    cursor.execute(
+        f"DELETE FROM study_plans WHERE user_id = {ph}",
+        (user_id,)
+    )
+
+    cursor.execute(
+        f"""INSERT INTO study_plans 
+            (user_id, plan_text, plan_json, created_date, updated_date)
+            VALUES ({ph}, {ph}, {ph}, {ph}, {ph})""",
+        (user_id, plan_text, plan_json, now, now)
+    )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def get_study_plan(user_id):
+    """بيرجع خطة المذاكرة"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    cursor.execute(
+        f"""SELECT plan_text, plan_json, created_date, updated_date
+            FROM study_plans WHERE user_id = {ph}""",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if row:
+        return {
+            "plan_text": row[0],
+            "plan_json": row[1],
+            "created_date": row[2],
+            "updated_date": row[3],
+        }
+    return None
+
+
+def has_study_plan(user_id):
+    """بيتحقق لو المستخدم عنده خطة"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    cursor.execute(
+        f"SELECT COUNT(*) FROM study_plans WHERE user_id = {ph}",
+        (user_id,)
+    )
+    count = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+    return count > 0
+
+
+# ===== دوال Pomodoro =====
+def save_pomodoro_session(user_id, subject, duration):
+    """بيحفظ جلسة Pomodoro"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    cursor.execute(
+        f"""INSERT INTO pomodoro_sessions 
+            (user_id, subject, duration, session_date)
+            VALUES ({ph}, {ph}, {ph}, {ph})""",
+        (user_id, subject, duration, now)
+    )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def get_today_pomodoro_count(user_id):
+    """بيرجع عدد جلسات Pomodoro النهاردة"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    today = str(date.today())
+
+    cursor.execute(
+        f"""SELECT COUNT(*) FROM pomodoro_sessions 
+            WHERE user_id = {ph} AND session_date LIKE {ph}""",
+        (user_id, f"{today}%")
+    )
+    count = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+    return count
+
+
+def get_today_pomodoro_minutes(user_id):
+    """بيرجع عدد دقائق Pomodoro النهاردة"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    today = str(date.today())
+
+    cursor.execute(
+        f"""SELECT COALESCE(SUM(duration), 0) FROM pomodoro_sessions 
+            WHERE user_id = {ph} AND session_date LIKE {ph}""",
+        (user_id, f"{today}%")
+    )
+    minutes = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+    return minutes
+
+
+def get_pomodoro_stats(user_id, days=7):
+    """إحصائيات Pomodoro لآخر N أيام"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    cursor.execute(
+        f"""SELECT COUNT(*), COALESCE(SUM(duration), 0) FROM pomodoro_sessions 
+            WHERE user_id = {ph} AND session_date >= {ph}""",
+        (user_id, start_date)
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    return {
+        "sessions": row[0] if row else 0,
+        "minutes": row[1] if row else 0,
+    }

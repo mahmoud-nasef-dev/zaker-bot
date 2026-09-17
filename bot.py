@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 import google.generativeai as genai
 from dotenv import load_dotenv
 from pypdf import PdfReader
@@ -25,7 +26,10 @@ from database import (
     clear_user_subjects, has_subjects,
     set_user_college, get_user_college,
     complete_onboarding, is_onboarding_done,
-    save_analysis, get_analysis, has_analysis
+    save_analysis, get_analysis, has_analysis,
+    save_study_plan, get_study_plan, has_study_plan,
+    save_pomodoro_session, get_today_pomodoro_count,
+    get_today_pomodoro_minutes, get_pomodoro_stats
 )
 from keyboards import (
     main_menu, pdf_menu, quiz_menu, explain_menu,
@@ -36,7 +40,10 @@ from keyboards import (
     analysis_start_menu,
     analysis_q1_time, analysis_q2_duration, analysis_q3_style,
     analysis_q4_hard_subject, analysis_q5_goal, analysis_q6_exams,
-    analysis_result_menu, analysis_needed_menu
+    analysis_result_menu, analysis_needed_menu,
+    plan_menu, plan_needs_analysis_menu,
+    pomodoro_start_menu, pomodoro_duration_menu,
+    pomodoro_subjects_menu, pomodoro_active_menu, pomodoro_done_menu
 )
 
 # ===== الإعدادات =====
@@ -58,7 +65,6 @@ async def safe_edit(query, text, parse_mode="Markdown", reply_markup=None):
     except Exception as e:
         error_str = str(e)
         if "Message is not modified" in error_str:
-            # ده مش خطأ حقيقي، نتجاهله
             print(f"ℹ️ Message not modified (تجاهل)")
         else:
             print(f"⚠️ خطأ في edit_message_text: {e}")
@@ -170,6 +176,93 @@ def analyze_pdf_content(text, analysis_type="summary", user_subjects=None, user_
     }
 
     prompt = prompts.get(analysis_type, prompts["summary"])
+    response = model.generate_content(prompt)
+    return response.text
+
+
+def generate_study_plan(analysis, subjects, college):
+    """بينشئ خطة مذاكرة مخصصة بـ Gemini"""
+    subjects_str = ", ".join(subjects) if subjects else "مش محدد"
+
+    study_time_map = {
+        "morning": "الصبح (6-12)",
+        "afternoon": "العصر (12-5)",
+        "evening": "بالليل (5-10)",
+        "night": "بعد منتصف الليل",
+    }
+
+    focus_map = {
+        "15": "15 دقيقة",
+        "25": "25 دقيقة",
+        "45": "45 دقيقة",
+        "60": "ساعة",
+    }
+
+    style_map = {
+        "visual": "بصري (رسومات)",
+        "video": "بالفيديو",
+        "reading": "بالقراءة",
+        "practice": "بالممارسة",
+    }
+
+    exam_map = {
+        "week": "بعد أسبوع",
+        "month": "بعد شهر",
+        "2months": "بعد شهرين",
+        "unknown": "مش محدد",
+    }
+
+    study_time = study_time_map.get(analysis.get("study_time"), "غير محدد")
+    focus = focus_map.get(analysis.get("focus_duration"), "غير محدد")
+    style = style_map.get(analysis.get("learning_style"), "غير محدد")
+    exam = exam_map.get(analysis.get("exam_timing"), "غير محدد")
+    hard_subject = analysis.get("hard_subject", "غير محدد")
+
+    prompt = f"""إنت "ذاكر" - مدرب دراسي مصري.
+
+معلومات الطالب:
+- الكلية: {college or "غير محددة"}
+- المواد: {subjects_str}
+- وقت المذاكرة المفضل: {study_time}
+- مدة التركيز: {focus}
+- نمط التعلم: {style}
+- أصعب مادة: {hard_subject}
+- الامتحانات: {exam}
+
+اعمله **خطة مذاكرة أسبوعية** بالشكل ده:
+
+📅 **السبت:**
+📚 [المادة] - [المدة]
+⏰ [الوقت]
+
+📅 **الأحد:**
+📚 [المادة] - [المدة]
+⏰ [الوقت]
+
+... (وكده لباقي الأيام)
+
+━━━━━━━━━━━━━━━
+
+💡 **نصائح مخصصة:**
+• [نصيحة 1]
+• [نصيحة 2]
+• [نصيحة 3]
+
+━━━━━━━━━━━━━━━
+
+📊 **إجمالي:**
+⏱️ [X] ساعة/أسبوع
+📚 [Y] مادة
+
+ملاحظات:
+- وزّع المواد حسب الصعوبة
+- استخدم وقت المذاكرة اللي يحبه
+- خلي المدة مناسبة لتركيزه
+- الأيام 7 (السبت للجمعة)
+- اكتب بالعربي
+- استخدم إيموجي
+- خليك واقعي (مش أكتر من 3-4 ساعات في اليوم)"""
+
     response = model.generate_content(prompt)
     return response.text
 
@@ -532,12 +625,10 @@ async def analysis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== معالجة أزرار التحليل الشخصي =====
 async def handle_analysis_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """بتتعامل مع أزرار التحليل الشخصي بس"""
     query = update.callback_query
     data = query.data
     user = query.from_user
 
-    # ===== بداية التحليل =====
     if data == "analysis_begin" or data == "analysis_restart":
         await query.answer()
 
@@ -545,7 +636,6 @@ async def handle_analysis_buttons(update: Update, context: ContextTypes.DEFAULT_
         context.user_data["analysis_step"] = 1
         context.user_data["analysis_answers"] = {}
 
-        # ابدأ من السؤال 1 مباشرة
         await safe_edit(
             query,
             "📊 *سؤال 1 من 6*\n\n"
@@ -566,7 +656,6 @@ async def handle_analysis_buttons(update: Update, context: ContextTypes.DEFAULT_
         )
         return
 
-    # ===== تخطي السؤال =====
     if data == "ans_skip":
         await query.answer()
         step = context.user_data.get("analysis_step", 1)
@@ -577,7 +666,6 @@ async def handle_analysis_buttons(update: Update, context: ContextTypes.DEFAULT_
         await show_next_question(query, context, step + 1)
         return
 
-    # ===== إجابات الأسئلة =====
     if data.startswith("ans_q"):
         await query.answer()
         parts = data.replace("ans_q", "").split("_", 1)
@@ -595,7 +683,6 @@ async def handle_analysis_buttons(update: Update, context: ContextTypes.DEFAULT_
 
 # ===== معالجة أزرار PDF =====
 async def handle_pdf_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """بتتعامل مع أزرار تحليل PDF بس"""
     query = update.callback_query
     data = query.data
 
@@ -644,6 +731,319 @@ async def handle_pdf_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     except Exception as e:
         await safe_edit(query, f"❌ حصل خطأ: {str(e)}")
+
+
+# ===== معالجة أزرار Pomodoro =====
+async def handle_pomodoro_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    user = query.from_user
+
+    # ===== بداية Pomodoro =====
+    if data == "start_pomodoro":
+        await query.answer()
+
+        if not has_subjects(user.id):
+            await safe_edit(
+                query,
+                "⚠️ *ضيف موادك الأول!*\n\n"
+                "عشان أقدر أعملك جلسات مذاكرة،\n"
+                "محتاج أعرف موادك.",
+                reply_markup=subjects_menu()
+            )
+            return
+
+        await safe_edit(
+            query,
+            "⏱️ *Pomodoro — جلسة مذاكرة*\n\n"
+            "━━━━━━━━━━━━━━━\n\n"
+            "جلسة مذاكرة مركزة، وبعدها راحة.\n\n"
+            "اختار المادة والوقت:",
+            reply_markup=pomodoro_start_menu()
+        )
+        return
+
+    if data == "pomodoro_begin":
+        await query.answer()
+
+        subjects = get_user_subjects(user.id)
+        await safe_edit(
+            query,
+            "📚 *اختار المادة:*",
+            reply_markup=pomodoro_subjects_menu(subjects)
+        )
+        return
+
+    if data == "pomodoro_choose_subject":
+        await query.answer()
+
+        subjects = get_user_subjects(user.id)
+        await safe_edit(
+            query,
+            "📚 *اختار المادة:*",
+            reply_markup=pomodoro_subjects_menu(subjects)
+        )
+        return
+
+    if data.startswith("pomodoro_subj_"):
+        await query.answer()
+        subject = data.replace("pomodoro_subj_", "")
+        context.user_data["pomodoro_subject"] = subject
+
+        await safe_edit(
+            query,
+            f"📚 المادة: *{subject}*\n\n"
+            f"⏱️ اختار مدة الجلسة:",
+            reply_markup=pomodoro_duration_menu()
+        )
+        return
+
+    if data == "pomodoro_15" or data == "pomodoro_25" or data == "pomodoro_45" or data == "pomodoro_60":
+        await query.answer()
+        duration = int(data.replace("pomodoro_", ""))
+        subject = context.user_data.get("pomodoro_subject", "مذاكرة")
+
+        await safe_edit(
+            query,
+            f"⏱️ *جلسة Pomodoro*\n\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"📚 المادة: *{subject}*\n"
+            f"⏰ المدة: *{duration} دقيقة*\n\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"🚀 *يلا نبدأ!*\n\n"
+            f"💡 نصيحة: اقفل الموبايل وركز!",
+            reply_markup=pomodoro_active_menu()
+        )
+        context.user_data["pomodoro_duration"] = duration
+        return
+
+    # ===== خلصت الجلسة =====
+    if data == "pomodoro_done":
+        await query.answer()
+        subject = context.user_data.get("pomodoro_subject", "مذاكرة")
+        duration = context.user_data.get("pomodoro_duration", 25)
+
+        # احفظ الجلسة
+        save_pomodoro_session(user.id, subject, duration)
+
+        # احسب النقاط
+        points_earned = POINTS_REWARDS["pomodoro_session"]
+
+        # شوف لو خلص 4 جلسات النهاردة
+        today_count = get_today_pomodoro_count(user.id)
+        bonus_points = 0
+        if today_count >= 4:
+            bonus_points = POINTS_REWARDS["pomodoro_4_sessions"]
+
+        total_points = points_earned + bonus_points
+        add_points(user.id, total_points)
+
+        text = (
+            f"🎉 *عاش! جلسة مذاكرة خلصت*\n\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"📚 المادة: *{subject}*\n"
+            f"⏰ المدة: *{duration} دقيقة*\n"
+            f"💎 كسبت: *{points_earned} نقطة*\n"
+        )
+
+        if bonus_points > 0:
+            text += f"🎁 بونص 4 جلسات: *+{bonus_points} نقطة*\n"
+
+        text += (
+            f"\n🔥 *جلسات النهاردة:* {today_count}\n\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"💪 عاش يا بطل!"
+        )
+
+        await safe_edit(query, text, reply_markup=pomodoro_done_menu())
+        return
+
+    if data == "pomodoro_pause":
+        await query.answer("⏸️ الجلسة شغالة، كمّل!")
+        return
+
+    if data == "pomodoro_cancel":
+        await query.answer()
+        context.user_data.pop("pomodoro_subject", None)
+        context.user_data.pop("pomodoro_duration", None)
+
+        await safe_edit(
+            query,
+            "❌ *تم إلغاء الجلسة*\n\n"
+            "تقدر تبدأ تاني في أي وقت من ⏱️ ذاكر معايا"
+        )
+        return
+
+    if data == "pomodoro_again":
+        await query.answer()
+        subjects = get_user_subjects(user.id)
+        await safe_edit(
+            query,
+            "📚 *اختار المادة:*",
+            reply_markup=pomodoro_subjects_menu(subjects)
+        )
+        return
+
+    if data == "pomodoro_break":
+        await query.answer()
+        await safe_edit(
+            query,
+            "☕ *راحة 5 دقايق*\n\n"
+            "━━━━━━━━━━━━━━━\n\n"
+            "• اشرب حاجة ساقعة 🥤\n"
+            "• اتمشى شوية 🚶\n"
+            "• متفتحش موبايل 📱\n\n"
+            "بعد 5 دقايق، ارجع كمّل!",
+            reply_markup=pomodoro_done_menu()
+        )
+        return
+
+
+# ===== معالجة أزرار الخطة =====
+async def handle_plan_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    user = query.from_user
+
+    # ===== عرض الخطة الأسبوعية =====
+    if data == "show_weekly_plan":
+        await query.answer()
+
+        if not has_analysis(user.id):
+            await safe_edit(
+                query,
+                "⚠️ *لسه محتاج تحليل الأول!*\n\n"
+                "━━━━━━━━━━━━━━━\n\n"
+                "عشان أقدر أعملك خطة مخصصة،\n"
+                "محتاج أعرفك أكتر.",
+                reply_markup=plan_needs_analysis_menu()
+            )
+            return
+
+        if not has_study_plan(user.id):
+            # اعمل خطة جديدة
+            await safe_edit(
+                query,
+                "⏳ *جاري إعداد خطتك...*\n\n"
+                "استنى شوية، بعمل خطة أسبوعية مخصصة 📊"
+            )
+
+            analysis = get_analysis(user.id)
+            subjects = get_user_subjects(user.id)
+            college = get_user_college(user.id)
+
+            try:
+                plan_text = generate_study_plan(analysis, subjects, college)
+                plan_text = clean_text(plan_text)
+                save_study_plan(user.id, plan_text)
+            except Exception as e:
+                plan_text = f"❌ حصل خطأ: {str(e)}"
+
+            if len(plan_text) <= 4000:
+                await safe_edit(query, plan_text, reply_markup=plan_menu())
+            else:
+                await safe_edit(query, plan_text[:4000])
+                await update.effective_chat.send_message(
+                    plan_text[4000:],
+                    parse_mode="Markdown",
+                    reply_markup=plan_menu()
+                )
+            return
+
+        # عنده خطة
+        plan = get_study_plan(user.id)
+        plan_text = plan["plan_text"]
+
+        if len(plan_text) <= 4000:
+            await safe_edit(query, plan_text, reply_markup=plan_menu())
+        else:
+            await safe_edit(query, plan_text[:4000])
+            await update.effective_chat.send_message(
+                plan_text[4000:],
+                parse_mode="Markdown",
+                reply_markup=plan_menu()
+            )
+        return
+
+    # ===== عرض خطة النهاردة =====
+    if data == "show_today_plan":
+        await query.answer()
+
+        if not has_study_plan(user.id):
+            await safe_edit(
+                query,
+                "⚠️ اعمل خطتك الأول!",
+                reply_markup=plan_menu()
+            )
+            return
+
+        # نجيب خطة الأسبوع
+        plan = get_study_plan(user.id)
+
+        # نطلب من Gemini يستخرج النهاردة
+        days_ar = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
+        today_idx = datetime.now().weekday()
+        today_name = days_ar[today_idx]
+
+        try:
+            prompt = f"""من الخطة الأسبوعية دي، استخرجلي خطة يوم {today_name} بس.
+
+الخطة:
+{plan['plan_text']}
+
+اكتب:
+📅 **{today_name}**
+
+📚 [المادة] - [المدة]
+⏰ [الوقت]
+
+💡 [نصيحة سريعة]
+
+بالعربي، اكتب بإيجاز."""
+
+            response = model.generate_content(prompt)
+            today_plan = clean_text(response.text)
+        except Exception as e:
+            today_plan = f"❌ حصل خطأ: {str(e)}"
+
+        await safe_edit(query, today_plan, reply_markup=plan_menu())
+        return
+
+    # ===== جدد الخطة =====
+    if data == "regenerate_plan":
+        await query.answer()
+
+        if not has_analysis(user.id):
+            await safe_edit(
+                query,
+                "⚠️ محتاج تحليل الأول!",
+                reply_markup=plan_needs_analysis_menu()
+            )
+            return
+
+        await safe_edit(query, "⏳ *جاري تجديد الخطة...*")
+
+        analysis = get_analysis(user.id)
+        subjects = get_user_subjects(user.id)
+        college = get_user_college(user.id)
+
+        try:
+            plan_text = generate_study_plan(analysis, subjects, college)
+            plan_text = clean_text(plan_text)
+            save_study_plan(user.id, plan_text)
+        except Exception as e:
+            plan_text = f"❌ حصل خطأ: {str(e)}"
+
+        if len(plan_text) <= 4000:
+            await safe_edit(query, plan_text, reply_markup=plan_menu())
+        else:
+            await safe_edit(query, plan_text[:4000])
+            await update.effective_chat.send_message(
+                plan_text[4000:],
+                parse_mode="Markdown",
+                reply_markup=plan_menu()
+            )
+        return
 
 
 # ===== معالجة الأزرار العامة =====
@@ -749,31 +1149,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit(query, "✅ تم مسح كل المواد.", reply_markup=subjects_menu())
         return
 
-    # ===== زر خطتي =====
+    # ===== زر خطتي (من التحليل) =====
     if data == "show_my_plan":
         if not has_analysis(user.id):
             await safe_edit(
                 query,
                 "⚠️ لسه محتاج تحليل الأول!",
-                reply_markup=analysis_needed_menu()
+                reply_markup=plan_needs_analysis_menu()
             )
             return
 
-        analysis = get_analysis(user.id)
-        subjects = get_user_subjects(user.id)
-        subjects_text = "، ".join(subjects) if subjects else "لسه"
-
-        text = (
-            f"📊 *خطتك المخصصة*\n\n"
-            f"🌙 *وقت مذاكرتك:* {get_subject_display(analysis['study_time'])}\n"
-            f"⏱️ *تركيزك:* {get_subject_display(analysis['focus_duration'])}\n"
-            f"🧠 *تعلمك:* {get_subject_display(analysis['learning_style'])}\n"
-            f"📚 *موادك:* {subjects_text}\n\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"⏳ _قريب إن شاء الله — خطة مذاكرة كاملة_ 🚧"
+        await safe_edit(
+            query,
+            "📊 *خطتك المخصصة*\n\n"
+            "اختار:",
+            reply_markup=plan_menu()
         )
-
-        await safe_edit(query, text, reply_markup=back_button())
         return
 
     # ===== الأساسيات =====
@@ -865,7 +1256,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "account_stats":
-        await safe_edit(query, "📊 *إحصائياتك*\n\n_قريب إن شاء الله_ 🚧")
+        # إحصائيات المستخدم
+        pomo = get_pomodoro_stats(user.id, days=7)
+        points, level = get_user_points(user.id)
+
+        text = (
+            f"📊 *إحصائياتك*\n\n"
+            f"💎 النقاط: {points}\n"
+            f"⏱️ جلسات Pomodoro (7 أيام): {pomo['sessions']}\n"
+            f"⏰ دقائق المذاكرة: {pomo['minutes']}\n"
+        )
+        await safe_edit(query, text)
         return
 
     if data == "account_badges":
@@ -955,7 +1356,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== دالة عرض الأسئلة =====
 async def show_next_question(query, context, step):
-    """بتعرض السؤال التالي"""
     user = query.from_user
 
     questions = {
@@ -993,7 +1393,6 @@ async def show_next_question(query, context, step):
 
 # ===== دالة إنهاء التحليل =====
 async def finish_analysis(query, context, user):
-    """بتخلص التحليل وتعمل التقرير"""
     await safe_edit(
         query,
         "⏳ *جاري تحليل إجاباتك...*\n\n"
@@ -1320,7 +1719,6 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
             context.user_data["analysis_step"] = 1
             context.user_data["analysis_answers"] = {}
 
-            # ابدأ من السؤال 1 مباشرة
             await update.message.reply_text(
                 "📊 *سؤال 1 من 6*\n\n"
                 "⏰ *إنت بتذاكر إمتى؟*\n\n"
@@ -1337,31 +1735,38 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
                 "━━━━━━━━━━━━━━━\n\n"
                 "عشان أقدر أعمللك خطة مخصصة،\n"
                 "محتاج أعرفك أكتر.\n\n"
-                "عمل التحليل بياخد 30 ثانية بس!\n\n"
-                "━━━━━━━━━━━━━━━",
+                "عمل التحليل بياخد 30 ثانية بس!",
                 parse_mode="Markdown",
-                reply_markup=analysis_needed_menu()
+                reply_markup=plan_needs_analysis_menu()
             )
             return
 
-        analysis = get_analysis(user.id)
-        subjects = get_user_subjects(user.id)
-        subjects_text = "، ".join(subjects) if subjects else "لسه"
-
-        text_plan = (
-            f"📊 *خطتك المخصصة*\n\n"
-            f"🌙 *وقت مذاكرتك:* {get_subject_display(analysis['study_time'])}\n"
-            f"⏱️ *تركيزك:* {get_subject_display(analysis['focus_duration'])}\n"
-            f"🧠 *تعلمك:* {get_subject_display(analysis['learning_style'])}\n"
-            f"📚 *موادك:* {subjects_text}\n\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"⏳ _قريب إن شاء الله — خطة مذاكرة كاملة_ 🚧"
+        await update.message.reply_text(
+            "📊 *خطتك المخصصة*\n\n"
+            "اختار:",
+            parse_mode="Markdown",
+            reply_markup=plan_menu()
         )
+        return
+
+    if text == "⏱️ ذاكر معايا":
+        if not has_subjects(user.id):
+            await update.message.reply_text(
+                "⚠️ *ضيف موادك الأول!*\n\n"
+                "عشان أقدر أعملك جلسات مذاكرة،\n"
+                "محتاج أعرف موادك.",
+                parse_mode="Markdown",
+                reply_markup=subjects_menu()
+            )
+            return
 
         await update.message.reply_text(
-            text_plan,
+            "⏱️ *Pomodoro — جلسة مذاكرة*\n\n"
+            "━━━━━━━━━━━━━━━\n\n"
+            "جلسة مذاكرة مركزة، وبعدها راحة.\n\n"
+            "اختار المادة والوقت:",
             parse_mode="Markdown",
-            reply_markup=back_button()
+            reply_markup=pomodoro_start_menu()
         )
         return
 
@@ -1411,6 +1816,8 @@ def main():
     # ترتيب مهم
     app.add_handler(CallbackQueryHandler(handle_analysis_buttons, pattern="^(analysis_|ans_)"))
     app.add_handler(CallbackQueryHandler(handle_pdf_buttons, pattern="^pdf_"))
+    app.add_handler(CallbackQueryHandler(handle_pomodoro_buttons, pattern="^pomodoro_|^start_pomodoro"))
+    app.add_handler(CallbackQueryHandler(handle_plan_buttons, pattern="^(show_weekly_plan|show_today_plan|regenerate_plan)$"))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))

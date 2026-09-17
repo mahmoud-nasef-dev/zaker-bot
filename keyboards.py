@@ -14,7 +14,8 @@ def main_menu(is_admin=False):
         [KeyboardButton("💎 نقاطي"), KeyboardButton("🎁 هدية يومية")],
         [KeyboardButton("🏆 المتصدرين"), KeyboardButton("👥 دعوة أصدقاء")],
         [KeyboardButton("📚 موادي"), KeyboardButton("🧠 حللني")],
-        [KeyboardButton("📊 خطتي"), KeyboardButton("🏆 إنجازاتي")],
+        [KeyboardButton("📊 خطتي"), KeyboardButton("⏱️ ذاكر معايا")],
+        [KeyboardButton("🏆 إنجازاتي")],
     ]
 
     if is_admin:
@@ -125,7 +126,7 @@ def account_menu():
 
 
 def analysis_options_menu():
-    """قائمة خيارات تحليل PDF (مختلفة عن التحليل الشخصي)"""
+    """قائمة خيارات تحليل PDF"""
     keyboard = [
         [InlineKeyboardButton("📝 ملخص سريع", callback_data="pdf_summary")],
         [InlineKeyboardButton("📚 شرح تفصيلي", callback_data="pdf_explanation")],
@@ -186,7 +187,6 @@ def analysis_start_menu():
 
 
 def analysis_q1_time():
-    """سؤال 1: وقت المذاكرة"""
     keyboard = [
         [InlineKeyboardButton("🌅 الصبح (6-12)", callback_data="ans_q1_morning")],
         [InlineKeyboardButton("☀️ العصر (12-5)", callback_data="ans_q1_afternoon")],
@@ -198,7 +198,6 @@ def analysis_q1_time():
 
 
 def analysis_q2_duration():
-    """سؤال 2: مدة التركيز"""
     keyboard = [
         [InlineKeyboardButton("⏰ 15 دقيقة", callback_data="ans_q2_15")],
         [InlineKeyboardButton("⏰ 25 دقيقة", callback_data="ans_q2_25")],
@@ -210,7 +209,6 @@ def analysis_q2_duration():
 
 
 def analysis_q3_style():
-    """سؤال 3: نمط التعلم"""
     keyboard = [
         [InlineKeyboardButton("📊 بالرسومات", callback_data="ans_q3_visual")],
         [InlineKeyboardButton("🎬 بالفيديو", callback_data="ans_q3_video")],
@@ -222,7 +220,6 @@ def analysis_q3_style():
 
 
 def analysis_q4_hard_subject(subjects):
-    """سؤال 4: أصعب مادة - حسب المواد"""
     keyboard = []
 
     if subjects and len(subjects) > 0:
@@ -243,7 +240,6 @@ def analysis_q4_hard_subject(subjects):
 
 
 def analysis_q5_goal():
-    """سؤال 5: الهدف"""
     keyboard = [
         [InlineKeyboardButton("📝 أنجح بس", callback_data="ans_q5_pass")],
         [InlineKeyboardButton("🏆 أتفوق", callback_data="ans_q5_excel")],
@@ -255,7 +251,6 @@ def analysis_q5_goal():
 
 
 def analysis_q6_exams():
-    """سؤال 6: الامتحانات"""
     keyboard = [
         [InlineKeyboardButton("🔥 بعد أسبوع", callback_data="ans_q6_week")],
         [InlineKeyboardButton("📅 بعد شهر", callback_data="ans_q6_month")],
@@ -267,7 +262,6 @@ def analysis_q6_exams():
 
 
 def analysis_result_menu():
-    """قائمة بعد التحليل"""
     keyboard = [
         [InlineKeyboardButton("📊 اعرض خطتي", callback_data="show_my_plan")],
         [InlineKeyboardButton("🔄 اعد التحليل", callback_data="analysis_restart")],
@@ -277,9 +271,93 @@ def analysis_result_menu():
 
 
 def analysis_needed_menu():
-    """قائمة تظهر لما المستخدم يحتاج تحليل الأول"""
     keyboard = [
         [InlineKeyboardButton("🧠 حللني دلوقتي", callback_data="analysis_begin")],
         [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+# ============================================
+# ===== أزرار خطة المذاكرة (جديد - المرحلة 2) =====
+# ============================================
+
+def plan_menu():
+    """قائمة الخطة"""
+    keyboard = [
+        [InlineKeyboardButton("📅 خطتي الأسبوعية", callback_data="show_weekly_plan")],
+        [InlineKeyboardButton("📚 خطة النهاردة", callback_data="show_today_plan")],
+        [InlineKeyboardButton("⏱️ ابدأ جلسة", callback_data="start_pomodoro")],
+        [InlineKeyboardButton("🔄 جدد الخطة", callback_data="regenerate_plan")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def plan_needs_analysis_menu():
+    """لما المستخدم يطلب خطة بس مفيش تحليل"""
+    keyboard = [
+        [InlineKeyboardButton("🧠 حللني دلوقتي", callback_data="analysis_begin")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def pomodoro_start_menu():
+    """بداية Pomodoro"""
+    keyboard = [
+        [InlineKeyboardButton("🚀 ابدأ الجلسة", callback_data="pomodoro_begin")],
+        [InlineKeyboardButton("📚 اختار مادة", callback_data="pomodoro_choose_subject")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def pomodoro_duration_menu():
+    """اختيار مدة الجلسة"""
+    keyboard = [
+        [InlineKeyboardButton("⏱️ 15 دقيقة", callback_data="pomodoro_15")],
+        [InlineKeyboardButton("⏱️ 25 دقيقة", callback_data="pomodoro_25")],
+        [InlineKeyboardButton("⏱️ 45 دقيقة", callback_data="pomodoro_45")],
+        [InlineKeyboardButton("⏱️ 60 دقيقة", callback_data="pomodoro_60")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def pomodoro_subjects_menu(subjects):
+    """اختيار المادة للجلسة"""
+    keyboard = []
+
+    if subjects and len(subjects) > 0:
+        for subject in subjects[:5]:
+            keyboard.append([
+                InlineKeyboardButton(f"📚 {subject}", callback_data=f"pomodoro_subj_{subject}")
+            ])
+    else:
+        keyboard.append([
+            InlineKeyboardButton("⚠️ مفيش مواد، ضيف موادك", callback_data="my_subjects")
+        ])
+
+    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_home")])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def pomodoro_active_menu():
+    """أثناء الجلسة"""
+    keyboard = [
+        [InlineKeyboardButton("✅ خلصت الجلسة", callback_data="pomodoro_done")],
+        [InlineKeyboardButton("⏸️ إيقاف مؤقت", callback_data="pomodoro_pause")],
+        [InlineKeyboardButton("❌ إلغاء", callback_data="pomodoro_cancel")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def pomodoro_done_menu():
+    """بعد الجلسة"""
+    keyboard = [
+        [InlineKeyboardButton("▶️ جلسة تانية", callback_data="pomodoro_again")],
+        [InlineKeyboardButton("☕ راحة", callback_data="pomodoro_break")],
+        [InlineKeyboardButton("🏠 خلصت النهاردة", callback_data="back_home")],
     ]
     return InlineKeyboardMarkup(keyboard)
