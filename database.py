@@ -973,3 +973,20 @@ def get_pomodoro_stats(user_id, days=7):
         "sessions": row[0] if row else 0,
         "minutes": row[1] if row else 0,
     }
+def is_onboarding_done(user_id):
+    """بيتحقق لو المستخدم خلص onboarding"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    cursor.execute(
+        f"SELECT onboarding_done FROM users WHERE user_id = {ph}",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if row:
+        return bool(row[0])
+    return False
