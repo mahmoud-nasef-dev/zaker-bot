@@ -64,6 +64,7 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
 
+    # ===== جدول users =====
     if USE_POSTGRES:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -107,6 +108,26 @@ def init_db():
             )
         """)
 
+    conn.commit()
+
+    # ===== Migration: نضيف أعمدة جديدة لو الجدول قديم =====
+    # college
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN college TEXT DEFAULT NULL")
+        conn.commit()
+        print("✅ تم إضافة college")
+    except:
+        conn.rollback()
+
+    # onboarding_done
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN onboarding_done INTEGER DEFAULT 0")
+        conn.commit()
+        print("✅ تم إضافة onboarding_done")
+    except:
+        conn.rollback()
+
+    # ===== جدول user_subjects =====
     if USE_POSTGRES:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS user_subjects (
@@ -191,7 +212,9 @@ def get_or_create_user(user_id, username, first_name, invited_by=None):
     conn.close()
 
     # onboarding_done index = 15
-    onboarding = bool(user[15]) if len(user) > 15 else False
+    onboarding = False
+    if len(user) > 15:
+        onboarding = bool(user[15])
 
     return {
         "user_id": user[0], "plan": user[7], "daily_requests": daily_requests,
@@ -251,14 +274,20 @@ def get_user_college(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"SELECT college FROM users WHERE user_id = {ph}",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    return row[0] if row and row[0] else None
+    try:
+        cursor.execute(
+            f"SELECT college FROM users WHERE user_id = {ph}",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+        return row[0] if row and row[0] else None
+    except Exception as e:
+        cursor.close()
+        conn.close()
+        print(f"⚠️ خطأ في get_user_college: {e}")
+        return None
 
 
 # ===== دوال النقاط =====
