@@ -170,11 +170,60 @@ def summarize_text(text):
 
 
 def process_pdf(file_path):
-    reader = PdfReader(file_path)
-    text = ""
-    for page in reader.pages:
-        text += page.extract_text() + "\n"
-    return text
+    """بيحاول يقرا PDF بـ pypdf الأول، لو فشل → Gemini"""
+    # المحاولة الأولى: pypdf
+    try:
+        reader = PdfReader(file_path)
+        text = ""
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            text += page_text + "\n"
+
+        # لو النص كافي → نرجعه
+        if len(text.strip()) > 200:
+            print(f"✅ pypdf: {len(text)} حرف")
+            return text
+        else:
+            print(f"⚠️ pypdf رجع نص قصير ({len(text)} حرف) — بنجرب Gemini")
+    except Exception as e:
+        print(f"⚠️ pypdf فشل: {e} — بنجرب Gemini")
+
+    # المحاولة التانية: Gemini File Upload
+    try:
+        uploaded_file = genai.upload_file(file_path)
+
+        # نستنى المعالجة
+        import time
+        max_wait = 30
+        waited = 0
+        while uploaded_file.state.name == "PROCESSING" and waited < max_wait:
+            time.sleep(2)
+            waited += 2
+            uploaded_file = genai.get_file(uploaded_file.name)
+
+        if uploaded_file.state.name == "FAILED":
+            print("❌ Gemini فشل في معالجة الملف")
+            return ""
+
+        response = gemini_model.generate_content([
+            uploaded_file,
+            "استخرج كل النص اللي في الملف ده. رجّع النص زي ما هو (إنجليزي يبقى إنجليزي، عربي يبقى عربي). متضيفش أي كلام من عندك."
+        ])
+
+        text = response.text or ""
+        print(f"✅ Gemini: {len(text)} حرف")
+
+        # امسح الملف من Gemini
+        try:
+            genai.delete_file(uploaded_file.name)
+        except:
+            pass
+
+        return text
+
+    except Exception as e:
+        print(f"❌ Gemini فشل كمان: {e}")
+        return ""
 
 
 def analyze_pdf_content(text, analysis_type="summary", user_subjects=None, user_college=None):
