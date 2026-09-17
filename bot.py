@@ -1,4 +1,5 @@
 import os
+import json
 import google.generativeai as genai
 from dotenv import load_dotenv
 from pypdf import PdfReader
@@ -23,14 +24,19 @@ from database import (
     get_user_subjects, add_subject, delete_subject,
     clear_user_subjects, has_subjects,
     set_user_college, get_user_college,
-    complete_onboarding, is_onboarding_done
+    complete_onboarding, is_onboarding_done,
+    save_analysis, get_analysis, has_analysis
 )
 from keyboards import (
     main_menu, pdf_menu, quiz_menu, explain_menu,
     translate_menu, summarize_menu, account_menu,
     back_button, points_menu, analysis_options_menu,
     admin_panel_menu, admin_user_actions,
-    skip_subjects_button, subjects_menu
+    skip_subjects_button, subjects_menu,
+    analysis_start_menu,
+    analysis_q1_time, analysis_q2_duration, analysis_q3_style,
+    analysis_q4_hard_subject, analysis_q5_goal, analysis_q6_exams,
+    analysis_result_menu, analysis_needed_menu
 )
 
 # ===== الإعدادات =====
@@ -54,7 +60,6 @@ def summarize_text(text):
 
 
 def process_pdf(file_path):
-    """بيقرا ملف PDF وبيرجع النص بتاعه"""
     reader = PdfReader(file_path)
     text = ""
     for page in reader.pages:
@@ -63,7 +68,6 @@ def process_pdf(file_path):
 
 
 def analyze_pdf_content(text, analysis_type="summary", user_subjects=None, user_college=None):
-    """بيحلل محتوى PDF حسب النوع المطلوب"""
     if len(text) > 15000:
         text = text[:15000] + "..."
 
@@ -86,7 +90,6 @@ def analyze_pdf_content(text, analysis_type="summary", user_subjects=None, user_
 المحتوى ده من محاضرة بالإنجليزي.
 
 اعملي **ملخص سريع بالعربي** في 5-7 نقاط أساسية بس.
-خليك مختصر ومباشر.
 
 المحتوى:
 {text}
@@ -94,54 +97,42 @@ def analyze_pdf_content(text, analysis_type="summary", user_subjects=None, user_
         "explanation": f"""{subjects_context}
 المحتوى ده من محاضرة بالإنجليزي.
 
-اعملي **شرح تفصيلي بالعربي** للمحتوى كله، بشرط:
-
-1. اشرح **كل نقطة** بالتفصيل
-2. ادي **أمثلة** على كل نقطة
-3. اشرح **المصطلحات** جوا السياق
-4. نظّم الشرح في **أجزاء صغيرة** (كل جزء 3-4 أسطر)
+اعملي **شرح تفصيلي بالعربي**:
+1. اشرح كل نقطة بالتفصيل
+2. ادي أمثلة
+3. اشرح المصطلحات
+4. نظّم الشرح في أجزاء صغيرة
 
 المحتوى:
 {text}
 """,
         "terms": f"""{subjects_context}
-المحتوى ده من محاضرة بالإنجليزي.
+اعملي **قائمة المصطلحات**:
 
-اعملي **قائمة المصطلحات المهمة** بالشكل ده:
-
-🔤 **المصطلح**
-📖 المعنى بالعربي
+🔤 المصطلح
+📖 المعنى
 💡 مثال
-
-خليها 10-15 مصطلح أساسي.
 
 المحتوى:
 {text}
 """,
         "quiz": f"""{subjects_context}
-المحتوى ده من محاضرة بالإنجليزي.
-
-اعملي **5 أسئلة اختيارات** على المحتوى، بالشكل ده بالظبط:
+اعملي **5 أسئلة اختيارات**:
 
 **السؤال 1:**
-نص السؤال؟
+السؤال؟
 أ) خيار 1
 ب) خيار 2
 ج) خيار 3
 د) خيار 4
-✅ الإجابة الصحيحة: (أ/ب/ج/د)
-
-**السؤال 2:**
-...
+✅ الإجابة: (أ/ب/ج/د)
 
 المحتوى:
 {text}
 """,
         "examples": f"""{subjects_context}
-المحتوى ده من محاضرة بالإنجليزي.
+اعملي **5 أمثلة عملية** على المفاهيم:
 
-اعملي **5 أمثلة عملية من الحياة الواقعية** على المفاهيم اللي في المحتوى.
-كل مثال:
 🎯 المفهوم
 💡 المثال
 📝 الشرح
@@ -150,12 +141,10 @@ def analyze_pdf_content(text, analysis_type="summary", user_subjects=None, user_
 {text}
 """,
         "problems": f"""{subjects_context}
-المحتوى ده من محاضرة بالإنجليزي.
+اعملي **5 تمارين**:
 
-اعملي **5 تمارين/مسائل عملية** على المحتوى.
-كل مسألة:
 ❓ السؤال
-📝 الحل خطوة بخطوة
+📝 الحل
 
 المحتوى:
 {text}
@@ -168,7 +157,6 @@ def analyze_pdf_content(text, analysis_type="summary", user_subjects=None, user_
 
 
 def clean_text(text):
-    """بتنضف النص من علامات Markdown"""
     if not text:
         return ""
 
@@ -189,9 +177,8 @@ def clean_text(text):
     return "\n".join(cleaned_lines)
 
 
-# ===== دوال النقاط =====
+# ===== دوال مساعدة =====
 def format_level_bar(points, level_info):
-    """بيرسم شريط تقدم المستوى"""
     min_pts = level_info["min_points"]
     max_pts = level_info["max_points"]
 
@@ -208,9 +195,36 @@ def format_level_bar(points, level_info):
     return f"{bar} {percent}%"
 
 
+def get_subject_display(subject_code):
+    """يحول كود الإجابة لاسم عربي"""
+    mapping = {
+        "morning": "🌅 الصبح (6-12)",
+        "afternoon": "☀️ العصر (12-5)",
+        "evening": "🌙 بالليل (5-10)",
+        "night": "🦉 بعد منتصف الليل",
+        "15": "⏰ 15 دقيقة",
+        "25": "⏰ 25 دقيقة",
+        "45": "⏰ 45 دقيقة",
+        "60": "⏰ ساعة أو أكتر",
+        "visual": "📊 بالرسومات",
+        "video": "🎬 بالفيديو",
+        "reading": "📖 بالقراءة",
+        "practice": "💪 بالممارسة",
+        "pass": "📝 أنجح بس",
+        "excel": "🏆 أتفوق",
+        "work": "💼 أشتغل",
+        "study": "🎓 أكمل دراسات",
+        "week": "🔥 بعد أسبوع",
+        "month": "📅 بعد شهر",
+        "2months": "🗓️ بعد شهرين أو أكتر",
+        "unknown": "⏳ مش عارف",
+        "skip": "لم يجب",
+    }
+    return mapping.get(subject_code, subject_code)
+
+
 # ===== دالة الترحيب =====
 async def send_welcome(update_or_message, user, is_edit=False):
-    """بتبعت رسالة الترحيب الرئيسية"""
     plan = get_user_plan(user.id)
     allowed, remaining = check_limit(user.id)
     points, level = get_user_points(user.id)
@@ -242,7 +256,6 @@ async def send_welcome(update_or_message, user, is_edit=False):
     )
 
     is_admin = user.id in ADMIN_IDS
-    reply_markup = main_menu(is_admin=is_admin)
 
     if is_edit:
         await update_or_message.edit_text(welcome, parse_mode="Markdown")
@@ -250,7 +263,7 @@ async def send_welcome(update_or_message, user, is_edit=False):
         await update_or_message.reply_text(
             welcome,
             parse_mode="Markdown",
-            reply_markup=reply_markup
+            reply_markup=main_menu(is_admin=is_admin)
         )
 
 
@@ -296,15 +309,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📚 تمام! موادي محفوظة ✅\n\n"
             f"━━━━━━━━━━━━━━━\n\n"
             f"🎓 عايز أعرف *إنت في أي كلية*:\n\n"
-            f"اكتب اسم كليتك (مثال: حاسبات، طب، هندسة، تجارة، آداب، حقوق، علوم...)",
+            f"اكتب اسم كليتك (مثال: حاسبات، طب، هندسة، تجارة، آداب...)",
             parse_mode="Markdown"
         )
         return
 
-    # خلص onboarding
     complete_onboarding(user.id)
-
-    # ترحيب عادي
     await send_welcome(update.message, user)
 
 
@@ -319,7 +329,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/daily - هدية يومية\n"
         "/leaderboard - المتصدرين\n"
         "/invite - دعوة أصدقاء\n"
-        "/subjects - موادي"
+        "/subjects - موادي\n"
+        "/analysis - تحليلي"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -453,23 +464,52 @@ async def subjects_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subjects = get_user_subjects(user.id)
 
     if not subjects:
-        text = (
-            "📚 *موادك*\n\n"
-            "لسه مسجلتش مواد.\n\n"
-            "اختار من الأزرار:"
-        )
+        text = "📚 *موادي*\n\nلسه مسجلتش مواد.\n\nاختار:"
     else:
         subjects_list = "\n".join([f"{i+1}. {s}" for i, s in enumerate(subjects)])
-        text = (
-            f"📚 *موادك ({len(subjects)}):*\n\n"
-            f"{subjects_list}\n\n"
-            f"عايز تعدل؟"
-        )
+        text = f"📚 *موادي ({len(subjects)}):*\n\n{subjects_list}\n\nعايز تعدل؟"
 
     await update.message.reply_text(
         text,
         parse_mode="Markdown",
         reply_markup=subjects_menu()
+    )
+
+
+async def analysis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /analysis - يعرض تحليل المستخدم"""
+    user = update.effective_user
+    get_or_create_user(user.id, user.username, user.first_name)
+
+    if not has_analysis(user.id):
+        await update.message.reply_text(
+            "🧠 *لسه معملتش التحليل*\n\n"
+            "التحليل بياخد 30 ثانية بس، "
+            "وبيساعدني أفهمك وأديك خطة مخصصة!",
+            parse_mode="Markdown",
+            reply_markup=analysis_needed_menu()
+        )
+        return
+
+    # اعرض التحليل
+    analysis = get_analysis(user.id)
+
+    text = (
+        f"🧠 *تحليلك الشخصي*\n\n"
+        f"🌙 *وقت مذاكرتك:* {get_subject_display(analysis['study_time'])}\n"
+        f"⏱️ *مدة تركيزك:* {get_subject_display(analysis['focus_duration'])}\n"
+        f"🧠 *نمط تعلمك:* {get_subject_display(analysis['learning_style'])}\n"
+        f"📚 *أصعب مادة:* {analysis['hard_subject']}\n"
+        f"🎯 *هدفك:* {get_subject_display(analysis['goal'])}\n"
+        f"📅 *امتحاناتك:* {get_subject_display(analysis['exam_timing'])}\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"📅 *آخر تحديث:* {analysis['analysis_date']}"
+    )
+
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=analysis_result_menu()
     )
 
 
@@ -481,7 +521,61 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     user = query.from_user
 
-    # ===== المواد =====
+    # ===== التحليل الشخصي =====
+    if data == "analysis_begin" or data == "analysis_restart":
+        # بدء التحليل
+        context.user_data["in_analysis"] = True
+        context.user_data["analysis_step"] = 1
+        context.user_data["analysis_answers"] = {}
+
+        await query.edit_message_text(
+            "🧠 *خليني أفهمك أكتر*\n\n"
+            "━━━━━━━━━━━━━━━\n\n"
+            "هجاوب على 6 أسئلة سريعة\n"
+            "وأطلعلك تقرير شخصي كامل عنك\n\n"
+            "━━━━━━━━━━━━━━━",
+            parse_mode="Markdown",
+            reply_markup=analysis_start_menu()
+        )
+        return
+
+    if data == "analysis_cancel":
+        context.user_data["in_analysis"] = False
+        await query.edit_message_text(
+            "❌ تم إلغاء التحليل\n\n"
+            "تقدر تبدأه في أي وقت من زر 🧠 حللني",
+            parse_mode="Markdown"
+        )
+        return
+
+    if data == "ans_skip":
+        # تخطي السؤال
+        step = context.user_data.get("analysis_step", 1)
+        answers = context.user_data.get("analysis_answers", {})
+        answers[f"q{step}"] = "skip"
+        context.user_data["analysis_answers"] = answers
+        context.user_data["analysis_step"] = step + 1
+        await show_next_question(query, context, step + 1)
+        return
+
+    # إجابات الأسئلة
+    if data.startswith("ans_q"):
+        # استخرج رقم السؤال والإجابة
+        parts = data.replace("ans_q", "").split("_", 1)
+        step = int(parts[0])
+        answer = parts[1] if len(parts) > 1 else ""
+
+        # احفظ الإجابة
+        answers = context.user_data.get("analysis_answers", {})
+        answers[f"q{step}"] = answer
+        context.user_data["analysis_answers"] = answers
+        context.user_data["analysis_step"] = step + 1
+
+        # اعرض السؤال التالي
+        await show_next_question(query, context, step + 1)
+        return
+
+    # ===== أزرار المواد =====
     if data == "skip_subjects":
         await query.edit_message_text(
             "👍 تمام! تقدر تضيف موادك في أي وقت من:\n"
@@ -511,10 +605,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "my_subjects":
         subjects = get_user_subjects(user.id)
         if not subjects:
-            text = "📚 *موادك*\n\nلسه مسجلتش مواد."
+            text = "📚 *موادي*\n\nلسه مسجلتش مواد."
         else:
             subjects_list = "\n".join([f"{i+1}. {s}" for i, s in enumerate(subjects)])
-            text = f"📚 *موادك ({len(subjects)}):*\n\n{subjects_list}"
+            text = f"📚 *موادي ({len(subjects)}):*\n\n{subjects_list}"
 
         await query.edit_message_text(
             text,
@@ -539,7 +633,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = "📚 لسه مفيش مواد مسجلة."
         else:
             subjects_list = "\n".join([f"{i+1}. {s}" for i, s in enumerate(subjects)])
-            text = f"📚 *موادك ({len(subjects)}):*\n\n{subjects_list}"
+            text = f"📚 *موادي ({len(subjects)}):*\n\n{subjects_list}"
 
         await query.edit_message_text(
             text,
@@ -589,6 +683,38 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # ===== زر خطتي =====
+    if data == "show_my_plan":
+        if not has_analysis(user.id):
+            await query.edit_message_text(
+                "⚠️ لسه محتاج تحليل الأول!",
+                reply_markup=analysis_needed_menu()
+            )
+            return
+
+        # اعرض الخطة
+        analysis = get_analysis(user.id)
+        subjects = get_user_subjects(user.id)
+
+        subjects_text = "، ".join(subjects) if subjects else "لسه"
+
+        text = (
+            f"📊 *خطتك المخصصة*\n\n"
+            f"🌙 *وقت مذاكرتك:* {get_subject_display(analysis['study_time'])}\n"
+            f"⏱️ *تركيزك:* {get_subject_display(analysis['focus_duration'])}\n"
+            f"🧠 *تعلمك:* {get_subject_display(analysis['learning_style'])}\n"
+            f"📚 *موادك:* {subjects_text}\n\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"⏳ _قريب إن شاء الله — خطة مذاكرة كاملة_ 🚧"
+        )
+
+        await query.edit_message_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=back_button()
+        )
+        return
+
     # ===== الأساسيات =====
     if data == "back_home":
         await query.edit_message_text(
@@ -608,7 +734,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📸 *ارفع صورة*\n\n_قريب إن شاء الله_ 🚧")
         return
 
-    # ===== الكويز =====
     if data == "quiz_from_pdf":
         await query.edit_message_text("🎯 *كويز من PDF*\n\nارفع ملف PDF الأول.")
         return
@@ -625,7 +750,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🎁 *الكويز اليومي*\n\n_قريب إن شاء الله_ 🚧")
         return
 
-    # ===== الشرح =====
     if data == "explain_concept":
         await query.edit_message_text("💡 *اشرحلي مفهوم*\n\nابعتلي اسم المفهوم.")
         return
@@ -638,7 +762,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🧮 *حل مسألة*\n\nابعتلي المسألة.")
         return
 
-    # ===== الترجمة =====
     if data == "translate_text":
         await query.edit_message_text("🌍 *ترجمة نص*\n\nابعتلي النص.")
         return
@@ -647,7 +770,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📄 *ترجمة ملف*\n\nارفع الملف.")
         return
 
-    # ===== التلخيص =====
     if data == "summarize_text":
         await query.edit_message_text("📝 *تلخيص نص*\n\nابعتلي النص.")
         return
@@ -656,7 +778,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📄 *تلخيص ملف*\n\nارفع الملف.")
         return
 
-    # ===== الحساب =====
     if data == "account_info":
         plan = get_user_plan(user.id)
         allowed, remaining = check_limit(user.id)
@@ -783,6 +904,160 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=admin_panel_menu()
         )
         return
+
+
+# ===== دالة عرض الأسئلة =====
+async def show_next_question(query, context, step):
+    """بتعرض السؤال التالي"""
+    user = query.from_user
+
+    # الأسئلة
+    questions = {
+        1: ("⏰ *إنت بتذاكر إمتى؟*", analysis_q1_time()),
+        2: ("⏱️ *بتقدر تركز كام دقيقة؟*", analysis_q2_duration()),
+        3: ("🧠 *بتفهم إزاي أكتر؟*", analysis_q3_style()),
+        5: ("🎯 *هدفك من المذاكرة؟*", analysis_q5_goal()),
+        6: ("📅 *امتحاناتك إمتى؟*", analysis_q6_exams()),
+    }
+
+    # السؤال 4 مختلف (حسب المواد)
+    if step == 4:
+        subjects = get_user_subjects(user.id)
+        text = "😰 *إيه أصعب مادة عليك؟*"
+        markup = analysis_q4_hard_subject(subjects)
+        await query.edit_message_text(
+            f"📊 *سؤال 4 من 6*\n\n{text}\n\n━━━━━━━━━━━━━━━",
+            parse_mode="Markdown",
+            reply_markup=markup
+        )
+        return
+
+    # لو خلصنا الأسئلة
+    if step > 6:
+        await finish_analysis(query, context, user)
+        return
+
+    if step in questions:
+        question_text, markup = questions[step]
+        await query.edit_message_text(
+            f"📊 *سؤال {step} من 6*\n\n{question_text}\n\n━━━━━━━━━━━━━━━",
+            parse_mode="Markdown",
+            reply_markup=markup
+        )
+        return
+
+
+# ===== دالة إنهاء التحليل =====
+async def finish_analysis(query, context, user):
+    """بتخلص التحليل وتعمل التقرير"""
+    await query.edit_message_text(
+        "⏳ *جاري تحليل إجاباتك...*\n\n"
+        "استنى شوية، بعمل تقريرك 📊",
+        parse_mode="Markdown"
+    )
+
+    answers = context.user_data.get("analysis_answers", {})
+
+    # استخرج الإجابات
+    study_time = answers.get("q1", "skip")
+    focus_duration = answers.get("q2", "skip")
+    learning_style = answers.get("q3", "skip")
+    hard_subject = answers.get("q4", "skip")
+    goal = answers.get("q5", "skip")
+    exam_timing = answers.get("q6", "skip")
+
+    # لو الإجابة skip في المواد، نجيب مواد المستخدم
+    if hard_subject == "skip":
+        subjects = get_user_subjects(user.id)
+        if subjects:
+            hard_subject = subjects[0]
+
+    # نحلل بـ Gemini
+    try:
+        prompt = f"""
+إنت "ذاكر" - مدرب دراسي.
+
+المستخدم جاوب على 6 أسئلة:
+
+1. وقت المذاكرة: {get_subject_display(study_time)}
+2. مدة التركيز: {get_subject_display(focus_duration)}
+3. نمط التعلم: {get_subject_display(learning_style)}
+4. أصعب مادة: {hard_subject}
+5. الهدف: {get_subject_display(goal)}
+6. الامتحانات: {get_subject_display(exam_timing)}
+
+اقرأ الإجابات دي، وطلع تقرير بالشكل ده:
+
+🧠 نمطك الدراسي:
+- (وصف مختصر لشخصيته الدراسية)
+
+⚡ نقاط قوتك:
+• (3 نقاط)
+
+⚠️ نقاط ضعفك:
+• (3 نقاط)
+
+💡 نصيحة مخصصة:
+• (2-3 نصائح عملية)
+
+خليك موجز ومباشر. استخدم إيموجي. بالعربي.
+"""
+
+        response = model.generate_content(prompt)
+        analysis_result = response.text
+        analysis_result = clean_text(analysis_result)
+
+    except Exception as e:
+        analysis_result = "حصل خطأ في التحليل. حاول تاني."
+        print(f"Error: {e}")
+
+    # احفظ في قاعدة البيانات
+    save_analysis(
+        user.id,
+        study_time, focus_duration, learning_style,
+        hard_subject, goal, exam_timing, analysis_result
+    )
+
+    # ضيف نقاط
+    add_points(user.id, POINTS_REWARDS["analysis_done"])
+
+    # اقفل التحليل
+    context.user_data["in_analysis"] = False
+
+    # اعرض التقرير
+    full_text = (
+        f"🎉 *تحليلك جاهز!*\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"📊 *إجاباتك:*\n\n"
+        f"🌙 وقت مذاكرتك: {get_subject_display(study_time)}\n"
+        f"⏱️ تركيزك: {get_subject_display(focus_duration)}\n"
+        f"🧠 نمط تعلمك: {get_subject_display(learning_style)}\n"
+        f"📚 أصعب مادة: {hard_subject}\n"
+        f"🎯 هدفك: {get_subject_display(goal)}\n"
+        f"📅 امتحاناتك: {get_subject_display(exam_timing)}\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"{analysis_result}\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"💎 *كسبت {POINTS_REWARDS['analysis_done']} نقطة!*"
+    )
+
+    # لو الرسالة طويلة، نقسمها
+    if len(full_text) <= 4000:
+        await query.edit_message_text(
+            full_text,
+            parse_mode="Markdown",
+            reply_markup=analysis_result_menu()
+        )
+    else:
+        await query.edit_message_text(
+            full_text[:4000],
+            parse_mode="Markdown"
+        )
+        await query.message.reply_text(
+            full_text[4000:],
+            parse_mode="Markdown",
+            reply_markup=analysis_result_menu()
+        )
 
 
 # ===== معالجة اختيار نوع التحليل =====
@@ -948,7 +1223,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ===== المعالجة العادية (ترجمة + تلخيص) =====
+    # ===== المعالجة العادية =====
     allowed, remaining = check_limit(user.id)
     if not allowed:
         await update.message.reply_text(
@@ -985,6 +1260,11 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
     # ===== لو في عملية إدخال =====
     if context.user_data.get("awaiting_subjects") or context.user_data.get("awaiting_college"):
         await handle_message(update, context)
+        return
+
+    # ===== لو المستخدم في التحليل =====
+    if context.user_data.get("in_analysis"):
+        # متعملش حاجة، التحليل شغال
         return
 
     # ===== الأزرار الأساسية =====
@@ -1059,18 +1339,61 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         await subjects_command(update, context)
         return
 
-    # ===== الأزرار الجديدة (للمرحلة 1 و 2) =====
+    # ===== الأزرار الجديدة =====
     if text == "🧠 حللني":
-        await update.message.reply_text(
-            "🧠 *التحليل الشخصي*\n\n"
-            "_قريب إن شاء الله — هنحللك ونديك خطة مذاكرة مخصصة_ 🚧"
-        )
+        if has_analysis(user.id):
+            # عنده تحليل → اعرضه
+            await analysis_command(update, context)
+        else:
+            # مفيش → ابدأ التحليل
+            context.user_data["in_analysis"] = True
+            context.user_data["analysis_step"] = 1
+            context.user_data["analysis_answers"] = {}
+
+            await update.message.reply_text(
+                "🧠 *خليني أفهمك أكتر*\n\n"
+                "━━━━━━━━━━━━━━━\n\n"
+                "هجاوب على 6 أسئلة سريعة\n"
+                "وأطلعلك تقرير شخصي كامل عنك\n\n"
+                "━━━━━━━━━━━━━━━",
+                parse_mode="Markdown",
+                reply_markup=analysis_start_menu()
+            )
         return
 
     if text == "📊 خطتي":
+        if not has_analysis(user.id):
+            await update.message.reply_text(
+                "⚠️ *لسه محتاج تحليل الأول!*\n\n"
+                "━━━━━━━━━━━━━━━\n\n"
+                "عشان أقدر أعمللك خطة مخصصة،\n"
+                "محتاج أعرفك أكتر.\n\n"
+                "عمل التحليل بياخد 30 ثانية بس!\n\n"
+                "━━━━━━━━━━━━━━━",
+                parse_mode="Markdown",
+                reply_markup=analysis_needed_menu()
+            )
+            return
+
+        # عنده تحليل → اعرض الخطة
+        analysis = get_analysis(user.id)
+        subjects = get_user_subjects(user.id)
+        subjects_text = "، ".join(subjects) if subjects else "لسه"
+
+        text_plan = (
+            f"📊 *خطتك المخصصة*\n\n"
+            f"🌙 *وقت مذاكرتك:* {get_subject_display(analysis['study_time'])}\n"
+            f"⏱️ *تركيزك:* {get_subject_display(analysis['focus_duration'])}\n"
+            f"🧠 *تعلمك:* {get_subject_display(analysis['learning_style'])}\n"
+            f"📚 *موادك:* {subjects_text}\n\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"⏳ _قريب إن شاء الله — خطة مذاكرة كاملة_ 🚧"
+        )
+
         await update.message.reply_text(
-            "📊 *خطة المذاكرة*\n\n"
-            "_قريب إن شاء الله_ 🚧"
+            text_plan,
+            parse_mode="Markdown",
+            reply_markup=back_button()
         )
         return
 
@@ -1116,6 +1439,7 @@ def main():
     app.add_handler(CommandHandler("leaderboard", leaderboard_command))
     app.add_handler(CommandHandler("invite", invite_command))
     app.add_handler(CommandHandler("subjects", subjects_command))
+    app.add_handler(CommandHandler("analysis", analysis_command))
     app.add_handler(CallbackQueryHandler(handle_pdf_options))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))

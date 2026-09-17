@@ -39,6 +39,7 @@ POINTS_REWARDS = {
     "invite_friend": 20,
     "streak_bonus_7": 50,
     "streak_bonus_30": 500,
+    "analysis_done": 30,
 }
 
 # ===== المستويات =====
@@ -110,20 +111,16 @@ def init_db():
 
     conn.commit()
 
-    # ===== Migration: نضيف أعمدة جديدة لو الجدول قديم =====
-    # college
+    # ===== Migration =====
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN college TEXT DEFAULT NULL")
         conn.commit()
-        print("✅ تم إضافة college")
     except:
         conn.rollback()
 
-    # onboarding_done
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN onboarding_done INTEGER DEFAULT 0")
         conn.commit()
-        print("✅ تم إضافة onboarding_done")
     except:
         conn.rollback()
 
@@ -146,6 +143,38 @@ def init_db():
                 subject_name TEXT NOT NULL,
                 added_date TEXT,
                 is_active INTEGER DEFAULT 1
+            )
+        """)
+
+    # ===== جدول user_analysis (جديد) =====
+    if USE_POSTGRES:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_analysis (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT UNIQUE NOT NULL,
+                study_time TEXT,
+                focus_duration TEXT,
+                learning_style TEXT,
+                hard_subject TEXT,
+                goal TEXT,
+                exam_timing TEXT,
+                analysis_result TEXT,
+                analysis_date TEXT
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_analysis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER UNIQUE NOT NULL,
+                study_time TEXT,
+                focus_duration TEXT,
+                learning_style TEXT,
+                hard_subject TEXT,
+                goal TEXT,
+                exam_timing TEXT,
+                analysis_result TEXT,
+                analysis_date TEXT
             )
         """)
 
@@ -211,7 +240,6 @@ def get_or_create_user(user_id, username, first_name, invited_by=None):
     cursor.close()
     conn.close()
 
-    # onboarding_done index = 15
     onboarding = False
     if len(user) > 15:
         onboarding = bool(user[15])
@@ -688,6 +716,83 @@ def has_subjects(user_id):
 
     cursor.execute(
         f"SELECT COUNT(*) FROM user_subjects WHERE user_id = {ph} AND is_active = 1",
+        (user_id,)
+    )
+    count = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+    return count > 0
+
+
+# ============================================
+# ===== دوال التحليل الشخصي (جديد) =====
+# ============================================
+
+def save_analysis(user_id, study_time, focus_duration, learning_style, hard_subject, goal, exam_timing, analysis_result):
+    """بيحفظ تحليل المستخدم"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # امسح التحليل القديم لو موجود
+    cursor.execute(
+        f"DELETE FROM user_analysis WHERE user_id = {ph}",
+        (user_id,)
+    )
+
+    # ضيف التحليل الجديد
+    cursor.execute(
+        f"""INSERT INTO user_analysis 
+            (user_id, study_time, focus_duration, learning_style, hard_subject, goal, exam_timing, analysis_result, analysis_date)
+            VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
+        (user_id, study_time, focus_duration, learning_style, hard_subject, goal, exam_timing, analysis_result, now)
+    )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def get_analysis(user_id):
+    """بيرجع تحليل المستخدم"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    cursor.execute(
+        f"""SELECT study_time, focus_duration, learning_style, hard_subject, 
+                   goal, exam_timing, analysis_result, analysis_date
+            FROM user_analysis WHERE user_id = {ph}""",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if row:
+        return {
+            "study_time": row[0],
+            "focus_duration": row[1],
+            "learning_style": row[2],
+            "hard_subject": row[3],
+            "goal": row[4],
+            "exam_timing": row[5],
+            "analysis_result": row[6],
+            "analysis_date": row[7],
+        }
+    return None
+
+
+def has_analysis(user_id):
+    """بيتحقق لو المستخدم عمل التحليل"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    cursor.execute(
+        f"SELECT COUNT(*) FROM user_analysis WHERE user_id = {ph}",
         (user_id,)
     )
     count = cursor.fetchone()[0]
