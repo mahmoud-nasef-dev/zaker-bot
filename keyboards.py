@@ -126,7 +126,7 @@ def account_menu():
 
 
 def analysis_options_menu():
-    """قائمة خيارات تحليل PDF"""
+    """قائمة خيارات تحليل PDF (القديمة - للتحليل السريع)"""
     keyboard = [
         [InlineKeyboardButton("📝 ملخص سريع", callback_data="pdf_summary")],
         [InlineKeyboardButton("📚 شرح تفصيلي", callback_data="pdf_explanation")],
@@ -279,7 +279,7 @@ def analysis_needed_menu():
 
 
 # ============================================
-# ===== أزرار خطة المذاكرة (جديد - المرحلة 2) =====
+# ===== أزرار خطة المذاكرة =====
 # ============================================
 
 def plan_menu():
@@ -359,5 +359,88 @@ def pomodoro_done_menu():
         [InlineKeyboardButton("▶️ جلسة تانية", callback_data="pomodoro_again")],
         [InlineKeyboardButton("☕ راحة", callback_data="pomodoro_break")],
         [InlineKeyboardButton("🏠 خلصت النهاردة", callback_data="back_home")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+# ============================================
+# ===== أزرار v1.1 - Pagination (جديد) =====
+# ============================================
+
+def quick_actions_menu():
+    """قائمة الـ Quick Actions بعد رفع PDF (v1.1)"""
+    keyboard = [
+        [InlineKeyboardButton("⚡ ملخص سريع (10 ثواني)", callback_data="quick_summary")],
+        [InlineKeyboardButton("📚 شرح تفصيلي (فصول)", callback_data="full_explanation")],
+        [InlineKeyboardButton("🔤 مصطلحات", callback_data="quick_terms")],
+        [InlineKeyboardButton("🎯 كويز", callback_data="quick_quiz")],
+        [InlineKeyboardButton("💬 اسألني عن الملف", callback_data="ask_pdf")],
+        [InlineKeyboardButton("📥 حمّل التحليل", callback_data="download_analysis")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def chapters_menu(chapters):
+    """قائمة الفصول (v1.1)"""
+    keyboard = []
+
+    for i, chapter in enumerate(chapters):
+        title = chapter.get("title", f"الفصل {i+1}")
+        parts_count = len(chapter.get("parts", []))
+        keyboard.append([
+            InlineKeyboardButton(
+                f"📖 {title} ({parts_count} أجزاء)",
+                callback_data=f"chapter_{i}"
+            )
+        ])
+
+    keyboard.append([InlineKeyboardButton("📥 حمّل كل الشرح", callback_data="download_full_explanation")])
+    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_home")])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+def chapter_nav_menu(chapter_idx, part_idx, total_parts):
+    """أزرار التنقل بين الأجزاء (v1.1)"""
+    keyboard = []
+    nav_row = []
+
+    if part_idx > 0:
+        nav_row.append(InlineKeyboardButton("⬅️ السابق", callback_data=f"prev_part_{chapter_idx}"))
+
+    if part_idx < total_parts - 1:
+        nav_row.append(InlineKeyboardButton("➡️ التالي", callback_data=f"next_part_{chapter_idx}"))
+
+    if nav_row:
+        keyboard.append(nav_row)
+
+    keyboard.append([
+        InlineKeyboardButton("📋 فهرس الفصول", callback_data="show_chapters")
+    ])
+    keyboard.append([
+        InlineKeyboardButton("📥 حمّل كل الشرح", callback_data="download_full_explanation")
+    ])
+    keyboard.append([InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back_home")])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+def chapter_options_menu():
+    """قائمة بعد عرض فصل (v1.1)"""
+    keyboard = [
+        [InlineKeyboardButton("💡 اشرح الفصل كامل", callback_data="explain_full_chapter")],
+        [InlineKeyboardButton("📌 اشرح جزء جزء", callback_data="explain_part_by_part")],
+        [InlineKeyboardButton("🎯 امتحنّي على الفصل", callback_data="quiz_this_chapter")],
+        [InlineKeyboardButton("📋 فهرس الفصول", callback_data="show_chapters")],
+        [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back_home")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def back_to_chapters_menu():
+    """رجوع للفصول"""
+    keyboard = [
+        [InlineKeyboardButton("📋 فهرس الفصول", callback_data="show_chapters")],
+        [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back_home")],
     ]
     return InlineKeyboardMarkup(keyboard)

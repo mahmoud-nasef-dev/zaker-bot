@@ -34,6 +34,8 @@ def placeholder():
 POINTS_REWARDS = {
     "text_analysis": 5,
     "pdf_analysis": 10,
+    "quick_summary": 5,
+    "full_explanation": 15,
     "quiz_complete": 15,
     "daily_gift": 5,
     "invite_friend": 20,
@@ -180,7 +182,7 @@ def init_db():
             )
         """)
 
-    # ===== جدول study_plans (جديد) =====
+    # ===== جدول study_plans =====
     if USE_POSTGRES:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS study_plans (
@@ -204,7 +206,7 @@ def init_db():
             )
         """)
 
-    # ===== جدول pomodoro_sessions (جديد) =====
+    # ===== جدول pomodoro_sessions =====
     if USE_POSTGRES:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS pomodoro_sessions (
@@ -223,6 +225,34 @@ def init_db():
                 subject TEXT,
                 duration INTEGER,
                 session_date TEXT
+            )
+        """)
+
+    # ===== جدول pdf_analyses (جديد - v1.1) =====
+    if USE_POSTGRES:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pdf_analyses (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                file_name TEXT,
+                page_count INTEGER,
+                pdf_text TEXT,
+                quick_summary TEXT,
+                chapters_json TEXT,
+                created_date TEXT
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pdf_analyses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                file_name TEXT,
+                page_count INTEGER,
+                pdf_text TEXT,
+                quick_summary TEXT,
+                chapters_json TEXT,
+                created_date TEXT
             )
         """)
 
@@ -311,6 +341,24 @@ def complete_onboarding(user_id):
     conn.commit()
     cursor.close()
     conn.close()
+
+
+def is_onboarding_done(user_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    cursor.execute(
+        f"SELECT onboarding_done FROM users WHERE user_id = {ph}",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if row:
+        return bool(row[0])
+    return False
 
 
 def set_user_college(user_id, college):
@@ -823,12 +871,8 @@ def has_analysis(user_id):
     return count > 0
 
 
-# ============================================
-# ===== دوال خطة المذاكرة (جديد - المرحلة 2) =====
-# ============================================
-
+# ===== دوال خطة المذاكرة =====
 def save_study_plan(user_id, plan_text, plan_json=None):
-    """بيحفظ خطة المذاكرة"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -853,7 +897,6 @@ def save_study_plan(user_id, plan_text, plan_json=None):
 
 
 def get_study_plan(user_id):
-    """بيرجع خطة المذاكرة"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -878,7 +921,6 @@ def get_study_plan(user_id):
 
 
 def has_study_plan(user_id):
-    """بيتحقق لو المستخدم عنده خطة"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -895,7 +937,6 @@ def has_study_plan(user_id):
 
 # ===== دوال Pomodoro =====
 def save_pomodoro_session(user_id, subject, duration):
-    """بيحفظ جلسة Pomodoro"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -915,7 +956,6 @@ def save_pomodoro_session(user_id, subject, duration):
 
 
 def get_today_pomodoro_count(user_id):
-    """بيرجع عدد جلسات Pomodoro النهاردة"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -934,7 +974,6 @@ def get_today_pomodoro_count(user_id):
 
 
 def get_today_pomodoro_minutes(user_id):
-    """بيرجع عدد دقائق Pomodoro النهاردة"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -953,7 +992,6 @@ def get_today_pomodoro_minutes(user_id):
 
 
 def get_pomodoro_stats(user_id, days=7):
-    """إحصائيات Pomodoro لآخر N أيام"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -973,14 +1011,49 @@ def get_pomodoro_stats(user_id, days=7):
         "sessions": row[0] if row else 0,
         "minutes": row[1] if row else 0,
     }
-def is_onboarding_done(user_id):
-    """بيتحقق لو المستخدم خلص onboarding"""
+
+
+# ============================================
+# ===== دوال PDF Analysis (جديد - v1.1) =====
+# ============================================
+
+def save_pdf_analysis(user_id, file_name, page_count, pdf_text, quick_summary, chapters_json):
+    """بيحفظ تحليل PDF كامل"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # امسح التحليلات القديمة للمستخدم (نحتفظ بواحد بس)
+    cursor.execute(
+        f"DELETE FROM pdf_analyses WHERE user_id = {ph}",
+        (user_id,)
+    )
+
+    # ضيف الجديد
+    cursor.execute(
+        f"""INSERT INTO pdf_analyses 
+            (user_id, file_name, page_count, pdf_text, quick_summary, chapters_json, created_date)
+            VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
+        (user_id, file_name, page_count, pdf_text, quick_summary, chapters_json, now)
+    )
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def get_pdf_analysis(user_id):
+    """بيرجع تحليل PDF الأخير للمستخدم"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
 
     cursor.execute(
-        f"SELECT onboarding_done FROM users WHERE user_id = {ph}",
+        f"""SELECT file_name, page_count, pdf_text, quick_summary, chapters_json, created_date
+            FROM pdf_analyses WHERE user_id = {ph}
+            ORDER BY id DESC LIMIT 1""",
         (user_id,)
     )
     row = cursor.fetchone()
@@ -988,5 +1061,43 @@ def is_onboarding_done(user_id):
     conn.close()
 
     if row:
-        return bool(row[0])
-    return False
+        return {
+            "file_name": row[0],
+            "page_count": row[1],
+            "pdf_text": row[2],
+            "quick_summary": row[3],
+            "chapters_json": row[4],
+            "created_date": row[5],
+        }
+    return None
+
+
+def has_pdf_analysis(user_id):
+    """بيتحقق لو المستخدم عنده تحليل PDF محفوظ"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    cursor.execute(
+        f"SELECT COUNT(*) FROM pdf_analyses WHERE user_id = {ph}",
+        (user_id,)
+    )
+    count = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+    return count > 0
+
+
+def clear_pdf_analysis(user_id):
+    """بيمسح تحليل PDF"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    cursor.execute(
+        f"DELETE FROM pdf_analyses WHERE user_id = {ph}",
+        (user_id,)
+    )
+    conn.commit()
+    cursor.close()
+    conn.close()

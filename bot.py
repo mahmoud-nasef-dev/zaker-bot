@@ -1,6 +1,6 @@
 import os
 import json
-import asyncio
+import re
 import google.generativeai as genai
 from dotenv import load_dotenv
 from pypdf import PdfReader
@@ -29,7 +29,9 @@ from database import (
     save_analysis, get_analysis, has_analysis,
     save_study_plan, get_study_plan, has_study_plan,
     save_pomodoro_session, get_today_pomodoro_count,
-    get_today_pomodoro_minutes, get_pomodoro_stats
+    get_today_pomodoro_minutes, get_pomodoro_stats,
+    save_pdf_analysis, get_pdf_analysis, has_pdf_analysis,
+    clear_pdf_analysis
 )
 from keyboards import (
     main_menu, pdf_menu, quiz_menu, explain_menu,
@@ -43,7 +45,9 @@ from keyboards import (
     analysis_result_menu, analysis_needed_menu,
     plan_menu, plan_needs_analysis_menu,
     pomodoro_start_menu, pomodoro_duration_menu,
-    pomodoro_subjects_menu, pomodoro_active_menu, pomodoro_done_menu
+    pomodoro_subjects_menu, pomodoro_active_menu, pomodoro_done_menu,
+    quick_actions_menu, chapters_menu, chapter_nav_menu,
+    chapter_options_menu, back_to_chapters_menu
 )
 
 # ===== الإعدادات =====
@@ -55,19 +59,81 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # ===== دالة آمنة لتعديل الرسائل =====
 async def safe_edit(query, text, parse_mode="Markdown", reply_markup=None):
-    """بتعدل الرسالة بأمان - بتتجاهل خطأ 'Message is not modified'"""
+    """بتعدل الرسالة بأمان"""
     try:
-        await query.edit_message_text(
-            text,
-            parse_mode=parse_mode,
-            reply_markup=reply_markup
-        )
+        # نقسم لو النص أطول من 4096
+        if len(text) > 4000:
+            await query.edit_message_text(text[:4000], parse_mode=parse_mode)
+            await query.message.reply_text(
+                text[4000:],
+                parse_mode=parse_mode,
+                reply_markup=reply_markup
+            )
+        else:
+            await query.edit_message_text(
+                text,
+                parse_mode=parse_mode,
+                reply_markup=reply_markup
+            )
     except Exception as e:
         error_str = str(e)
         if "Message is not modified" in error_str:
             print(f"ℹ️ Message not modified (تجاهل)")
         else:
             print(f"⚠️ خطأ في edit_message_text: {e}")
+            try:
+                await query.message.reply_text(
+                    text[:4000] if len(text) > 4000 else text,
+                    parse_mode=parse_mode,
+                    reply_markup=reply_markup
+                )
+            except Exception as e2:
+                print(f"⚠️ خطأ في reply_text: {e2}")
+
+
+# ===== دالة تنسيق النص لتيليجرام (v1.1) =====
+def format_for_telegram(text):
+    """بتنسق النص لتيليجرام (HTML)"""
+    if not text:
+        return ""
+
+    # شيل علامات Markdown المكررة
+    text = text.replace("###", "▪")
+    text = text.replace("##", "◈")
+    text = text.replace("---", "━━━━━━━━━━━━━")
+
+    # حوّل **نص** لـ <b>نص</b>
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+
+    # حوّل *نص* لـ <i>نص</i> (بحذر)
+    text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<i>\1</i>", text)
+
+    # شيل أي ** متبقية
+    text = text.replace("**", "")
+
+    return text
+
+
+def clean_text(text):
+    """تنظيف النص"""
+    if not text:
+        return ""
+
+    text = text.replace("###", "▪")
+    text = text.replace("##", "◈")
+    text = text.replace("#", "•")
+    text = text.replace("**", "")
+    text = text.replace("---", "━━━━━━━━━━━━━")
+
+    lines = text.split("\n")
+    cleaned_lines = []
+    for line in lines:
+        line = line.strip()
+        if line.startswith("*") and not line.startswith("**"):
+            line = "• " + line[1:].strip()
+        cleaned_lines.append(line)
+
+    return "\n".join(cleaned_lines)
 
 
 # ===== دوال AI =====
@@ -92,6 +158,7 @@ def process_pdf(file_path):
 
 
 def analyze_pdf_content(text, analysis_type="summary", user_subjects=None, user_college=None):
+    """تحليل PDF — كله بالعربي"""
     if len(text) > 15000:
         text = text[:15000] + "..."
 
@@ -103,45 +170,54 @@ def analyze_pdf_content(text, analysis_type="summary", user_subjects=None, user_
     if user_subjects:
         subjects_str = ", ".join(user_subjects)
         context_parts.append(f"مواد الطالب: {subjects_str}.")
-        context_parts.append("خلي أمثلتك وشرحك يناسب الكلية والمواد دي.")
-    else:
-        context_parts.append("إنت مساعد طالب جامعي في أي كلية أو مادة.")
 
     subjects_context = "\n".join(context_parts)
 
+    base_prompt = f"""{subjects_context}
+
+⚠️ مهم جداً:
+- كل الشرح بالعربي فقط
+- حتى لو المحتوى إنجليزي أو أي لغة تانية
+- اكتب المصطلحات الأجنبية (إنجليزي) + العربي
+- نظّم النص بعناوين عريضة **نص**
+- سيب سطر فاضي بين الأقسام
+- استخدم إيموجي للتنظيم
+"""
+
     prompts = {
-        "summary": f"""{subjects_context}
-المحتوى ده من محاضرة بالإنجليزي.
+        "summary": f"""{base_prompt}
 
-اعملي **ملخص سريع بالعربي** في 5-7 نقاط أساسية بس.
-
-المحتوى:
+📄 المحتوى:
 {text}
-""",
-        "explanation": f"""{subjects_context}
-المحتوى ده من محاضرة بالإنجليزي.
 
-اعملي **شرح تفصيلي بالعربي**:
-1. اشرح كل نقطة بالتفصيل
-2. ادي أمثلة
-3. اشرح المصطلحات
-4. نظّم الشرح في أجزاء صغيرة
+━━━━━━━━━━━━━━━
 
-المحتوى:
+اعملي ملخص سريع بالعربي في 5-7 نقاط أساسية.
+كل نقطة في سطر منفصل.""",
+
+        "terms": f"""{base_prompt}
+
+📄 المحتوى:
 {text}
-""",
-        "terms": f"""{subjects_context}
-اعملي **قائمة المصطلحات**:
 
-🔤 المصطلح
-📖 المعنى
+━━━━━━━━━━━━━━━
+
+اعملي قائمة المصطلحات المهمة:
+
+**🔤 المصطلح (English):**
+📖 المعنى بالعربي
 💡 مثال
 
-المحتوى:
+خليها 10-15 مصطلح.""",
+
+        "quiz": f"""{base_prompt}
+
+📄 المحتوى:
 {text}
-""",
-        "quiz": f"""{subjects_context}
-اعملي **5 أسئلة اختيارات**:
+
+━━━━━━━━━━━━━━━
+
+اعملي 5 أسئلة اختيارات:
 
 **السؤال 1:**
 السؤال؟
@@ -149,30 +225,20 @@ def analyze_pdf_content(text, analysis_type="summary", user_subjects=None, user_
 ب) خيار 2
 ج) خيار 3
 د) خيار 4
-✅ الإجابة: (أ/ب/ج/د)
+✅ الإجابة: (أ/ب/ج/د)""",
 
-المحتوى:
+        "examples": f"""{base_prompt}
+
+📄 المحتوى:
 {text}
-""",
-        "examples": f"""{subjects_context}
-اعملي **5 أمثلة عملية** على المفاهيم:
+
+━━━━━━━━━━━━━━━
+
+اعملي 5 أمثلة عملية على المفاهيم:
 
 🎯 المفهوم
 💡 المثال
-📝 الشرح
-
-المحتوى:
-{text}
-""",
-        "problems": f"""{subjects_context}
-اعملي **5 تمارين**:
-
-❓ السؤال
-📝 الحل
-
-المحتوى:
-{text}
-""",
+📝 الشرح""",
     }
 
     prompt = prompts.get(analysis_type, prompts["summary"])
@@ -180,8 +246,210 @@ def analyze_pdf_content(text, analysis_type="summary", user_subjects=None, user_
     return response.text
 
 
+def generate_quick_summary(pdf_text, user_college=None, user_subjects=None):
+    """ملخص سريع (10 ثواني)"""
+    if len(pdf_text) > 20000:
+        pdf_text = pdf_text[:20000] + "..."
+
+    context = ""
+    if user_college:
+        context += f"الطالب في كلية: {user_college}.\n"
+    if user_subjects:
+        context += f"مواده: {', '.join(user_subjects)}.\n"
+
+    prompt = f"""إنت مساعد طالب جامعي.
+
+{context}
+
+المحتوى ده محاضرة:
+
+{pdf_text}
+
+━━━━━━━━━━━━━━━
+
+🎯 اعمل **ملخص سريع جداً** بالعربي:
+
+⚠️ القواعد:
+- 5-7 نقاط بس
+- كل نقطة سطر واحد
+- من غير تفاصيل
+- من غير أمثلة
+- اكتب بالعربي حتى لو المحتوى إنجليزي
+- في النهاية: عدد الصفحات + الموضوع الرئيسي
+
+الشكل:
+
+📝 **الملخص السريع:**
+
+• النقطة 1
+• النقطة 2
+• ...
+
+📊 **عن الملف:**
+- الموضوع: ...
+- عدد الصفحات: ...
+- المستوى: [مبتدئ/متوسط/متقدم]
+
+خليك مختصر جداً."""
+
+    response = model.generate_content(prompt)
+    return response.text
+
+
+def generate_chapters(pdf_text, user_college=None, user_subjects=None, learning_style=None):
+    """يقسم المحتوى لفصول وأجزاء"""
+    if len(pdf_text) > 25000:
+        pdf_text = pdf_text[:25000] + "..."
+
+    context = ""
+    if user_college:
+        context += f"الطالب في كلية: {user_college}.\n"
+    if user_subjects:
+        context += f"مواده: {', '.join(user_subjects)}.\n"
+    if learning_style:
+        context += f"نمط تعلمه: {learning_style}.\n"
+
+    prompt = f"""إنت "ذاكر" — مدرب دراسي مصري.
+
+{context}
+
+المحتوى:
+{pdf_text}
+
+━━━━━━━━━━━━━━━
+
+🎯 قسّم المحتوى ده لفصول وأجزاء:
+
+⚠️ المطلوب:
+- 3-5 فصول منطقية
+- كل فصل فيه 3-5 أجزاء
+- كل جزء عنوان واضح
+- الترتيب منطقي
+
+⚠️ رد بـ JSON فقط، بدون أي كلام إضافي:
+
+{{
+  "chapters": [
+    {{
+      "title": "اسم الفصل",
+      "parts": [
+        {{"title": "عنوان الجزء 1"}},
+        {{"title": "عنوان الجزء 2"}}
+      ]
+    }}
+  ]
+}}"""
+
+    response = model.generate_content(prompt)
+
+    # نحاول نقرا JSON
+    try:
+        text = response.text.strip()
+        # شيل أي ```json
+        text = text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(text)
+        return data.get("chapters", [])
+    except Exception as e:
+        print(f"⚠️ خطأ في قراءة JSON: {e}")
+        # fallback — فصول افتراضية
+        return [
+            {"title": "الفصل 1", "parts": [{"title": "الجزء 1"}, {"title": "الجزء 2"}]},
+            {"title": "الفصل 2", "parts": [{"title": "الجزء 1"}, {"title": "الجزء 2"}]},
+            {"title": "الفصل 3", "parts": [{"title": "الجزء 1"}, {"title": "الجزء 2"}]},
+        ]
+
+
+def generate_chapter_explanation(pdf_text, chapter_title, parts, user_analysis=None, user_college=None, user_subjects=None):
+    """يشرح فصل كامل — كل حاجة بالعربي"""
+    if len(pdf_text) > 20000:
+        pdf_text = pdf_text[:20000] + "..."
+
+    # نبني سياق التحليل
+    analysis_context = ""
+    if user_analysis:
+        learning_style = user_analysis.get("learning_style", "")
+        goal = user_analysis.get("goal", "")
+        if learning_style:
+            analysis_context += f"نمط تعلمه: {learning_style}.\n"
+        if goal:
+            analysis_context += f"هدفه: {goal}.\n"
+
+    if user_college:
+        analysis_context += f"كلية: {user_college}.\n"
+    if user_subjects:
+        analysis_context += f"مواده: {', '.join(user_subjects)}.\n"
+
+    parts_text = "\n".join([f"- {p.get('title', 'جزء')}" for p in parts])
+
+    prompt = f"""إنت "ذاكر" — مدرب دراسي مصري.
+
+معلومات الطالب:
+{analysis_context}
+
+📚 الفصل: {chapter_title}
+
+الأجزاء المطلوب شرحها:
+{parts_text}
+
+📄 المحتوى الأصلي (اللي بيتكلم عن الفصل ده):
+{pdf_text}
+
+━━━━━━━━━━━━━━━
+
+🎯 اشرح الفصل ده بالكامل بالعربي:
+
+⚠️ القواعد الصارمة:
+
+1. **كل حاجة بالعربي** — حتى لو المحتوى إنجليزي
+2. **المصطلحات الأجنبية** اكتبها (English) + العربي
+3. **التنظيم:**
+   - العنوان الرئيسي: **📌 [اسم القسم]**
+   - النقاط: •
+   - الأمثلة: • مثال: ...
+   - التفاصيل: → ...
+   - سطر فاضي بين الأقسام
+4. **الشرح مخصص:**
+   - حسب نمط التعلم
+   - اشرح كل نقطة بالتفصيل
+   - ادي أمثلة عملية
+5. **الطول:**
+   - 1500-2500 كلمة
+   - مفصّل بس مش ممل
+   - مفيش نقاط ناقصة
+
+الشكل:
+
+📚 **{chapter_title}**
+
+━━━━━━━━━━━━━━━
+
+**📌 [القسم الأول]**
+
+شرح...
+• نقطة
+• نقطة
+
+   • مثال: ...
+   → شرح المثال
+
+
+**📌 [القسم التاني]**
+
+...
+
+
+━━━━━━━━━━━━━━━
+
+**💡 ملخص سريع:**
+1. ...
+2. ...
+3. ..."""
+
+    response = model.generate_content(prompt)
+    return response.text
+
+
 def generate_study_plan(analysis, subjects, college):
-    """بينشئ خطة مذاكرة مخصصة بـ Gemini"""
     subjects_str = ", ".join(subjects) if subjects else "مش محدد"
 
     study_time_map = {
@@ -229,7 +497,9 @@ def generate_study_plan(analysis, subjects, college):
 - أصعب مادة: {hard_subject}
 - الامتحانات: {exam}
 
-اعمله **خطة مذاكرة أسبوعية** بالشكل ده:
+اعمله خطة مذاكرة أسبوعية بالعربي.
+
+الشكل:
 
 📅 **السبت:**
 📚 [المادة] - [المدة]
@@ -239,53 +509,23 @@ def generate_study_plan(analysis, subjects, college):
 📚 [المادة] - [المدة]
 ⏰ [الوقت]
 
-... (وكده لباقي الأيام)
+...
 
 ━━━━━━━━━━━━━━━
 
 💡 **نصائح مخصصة:**
-• [نصيحة 1]
-• [نصيحة 2]
-• [نصيحة 3]
+• نصيحة 1
+• نصيحة 2
+• نصيحة 3
 
 ━━━━━━━━━━━━━━━
 
 📊 **إجمالي:**
 ⏱️ [X] ساعة/أسبوع
-📚 [Y] مادة
-
-ملاحظات:
-- وزّع المواد حسب الصعوبة
-- استخدم وقت المذاكرة اللي يحبه
-- خلي المدة مناسبة لتركيزه
-- الأيام 7 (السبت للجمعة)
-- اكتب بالعربي
-- استخدم إيموجي
-- خليك واقعي (مش أكتر من 3-4 ساعات في اليوم)"""
+📚 [Y] مادة"""
 
     response = model.generate_content(prompt)
     return response.text
-
-
-def clean_text(text):
-    if not text:
-        return ""
-
-    text = text.replace("###", "▪")
-    text = text.replace("##", "◈")
-    text = text.replace("#", "•")
-    text = text.replace("**", "")
-    text = text.replace("---", "━━━━━━━━━━━━━")
-
-    lines = text.split("\n")
-    cleaned_lines = []
-    for line in lines:
-        line = line.strip()
-        if line.startswith("*") and not line.startswith("**"):
-            line = "• " + line[1:].strip()
-        cleaned_lines.append(line)
-
-    return "\n".join(cleaned_lines)
 
 
 # ===== دوال مساعدة =====
@@ -588,15 +828,13 @@ async def subjects_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def analysis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /analysis"""
     user = update.effective_user
     get_or_create_user(user.id, user.username, user.first_name)
 
     if not has_analysis(user.id):
         await update.message.reply_text(
             "🧠 *لسه معملتش التحليل*\n\n"
-            "التحليل بياخد 30 ثانية بس، "
-            "وبيساعدني أفهمك وأديك خطة مخصصة!",
+            "التحليل بياخد 30 ثانية بس!",
             parse_mode="Markdown",
             reply_markup=analysis_needed_menu()
         )
@@ -623,7 +861,7 @@ async def analysis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ===== معالجة أزرار التحليل الشخصي =====
+# ===== معالجة أزرار التحليل =====
 async def handle_analysis_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
@@ -681,20 +919,354 @@ async def handle_analysis_buttons(update: Update, context: ContextTypes.DEFAULT_
         return
 
 
-# ===== معالجة أزرار PDF =====
+# ===== معالجة أزرار PDF (v1.1) =====
 async def handle_pdf_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة أزرار PDF + Quick Actions + Chapters"""
     query = update.callback_query
     data = query.data
+    user = query.from_user
 
+    # ===== Quick Actions (v1.1) =====
+    if data == "quick_summary":
+        await query.answer()
+        await handle_quick_summary(query, context, user)
+        return
+
+    if data == "full_explanation":
+        await query.answer()
+        await handle_full_explanation(query, context, user)
+        return
+
+    if data == "quick_terms":
+        await query.answer()
+        await handle_pdf_analysis(query, context, user, "terms")
+        return
+
+    if data == "quick_quiz":
+        await query.answer()
+        await handle_pdf_analysis(query, context, user, "quiz")
+        return
+
+    if data == "ask_pdf":
+        await query.answer()
+        await safe_edit(
+            query,
+            "💬 *اسألني عن الملف*\n\n"
+            "اكتب أي سؤال، وأنا هدور في الملف وأجاوبك.\n\n"
+            "📝 مستنيك..."
+        )
+        context.user_data["awaiting_pdf_question"] = True
+        return
+
+    if data == "download_analysis":
+        await query.answer("📥 قريب إن شاء الله 🚧")
+        return
+
+    # ===== Chapters (v1.1) =====
+    if data == "show_chapters":
+        await query.answer()
+        await show_chapters_list(query, context, user)
+        return
+
+    if data.startswith("chapter_"):
+        await query.answer()
+        chapter_idx = int(data.replace("chapter_", ""))
+        context.user_data["current_chapter"] = chapter_idx
+        context.user_data["current_part"] = 0
+        await show_chapter_parts(query, context, user, chapter_idx)
+        return
+
+    if data.startswith("prev_part_"):
+        await query.answer()
+        chapter_idx = int(data.replace("prev_part_", ""))
+        current_part = context.user_data.get("current_part", 0)
+        if current_part > 0:
+            context.user_data["current_part"] = current_part - 1
+        await show_chapter_parts(query, context, user, chapter_idx)
+        return
+
+    if data.startswith("next_part_"):
+        await query.answer()
+        chapter_idx = int(data.replace("next_part_", ""))
+        current_part = context.user_data.get("current_part", 0)
+        context.user_data["current_part"] = current_part + 1
+        await show_chapter_parts(query, context, user, chapter_idx)
+        return
+
+    if data == "explain_full_chapter":
+        await query.answer()
+        await handle_explain_chapter(query, context, user)
+        return
+
+    if data == "explain_part_by_part":
+        await query.answer()
+        await safe_edit(
+            query,
+            "📌 *شرح جزء جزء*\n\n"
+            "استخدم الأزرار ⬅️➡️ للتنقل بين الأجزاء.",
+            reply_markup=back_to_chapters_menu()
+        )
+        return
+
+    if data == "quiz_this_chapter":
+        await query.answer("🎯 قريب إن شاء الله 🚧")
+        return
+
+    if data == "download_full_explanation":
+        await query.answer("📥 قريب إن شاء الله 🚧")
+        return
+
+    # ===== الأزرار القديمة (لو لسه موجودة) =====
     if not data.startswith("pdf_"):
         await button_handler(update, context)
         return
 
     await query.answer()
-    user = query.from_user
-
     analysis_type = data.replace("pdf_", "")
+    await handle_pdf_analysis(query, context, user, analysis_type)
 
+
+async def handle_quick_summary(query, context, user):
+    """ملخص سريع (10 ثواني)"""
+    await safe_edit(query, "⚡ *جاري إعداد الملخص السريع...*\n\n_10 ثواني..._")
+
+    pdf_text = context.user_data.get("pdf_text", "")
+    if not pdf_text:
+        # نجرب من قاعدة البيانات
+        analysis = get_pdf_analysis(user.id)
+        if analysis:
+            pdf_text = analysis["pdf_text"]
+            quick_summary = analysis["quick_summary"]
+            if quick_summary:
+                formatted = format_for_telegram(quick_summary)
+                await safe_edit(
+                    query,
+                    formatted,
+                    parse_mode="HTML",
+                    reply_markup=quick_actions_menu()
+                )
+                return
+
+    if not pdf_text:
+        await safe_edit(query, "⚠️ الملف مش موجود. ارفعه تاني.")
+        return
+
+    user_college = get_user_college(user.id)
+    user_subjects = get_user_subjects(user.id)
+
+    try:
+        summary = generate_quick_summary(pdf_text, user_college, user_subjects)
+        formatted = format_for_telegram(summary)
+
+        # احفظ في قاعدة البيانات
+        context.user_data["quick_summary"] = summary
+
+        await safe_edit(
+            query,
+            formatted,
+            parse_mode="HTML",
+            reply_markup=quick_actions_menu()
+        )
+
+        increment_usage(user.id, POINTS_REWARDS["quick_summary"])
+
+    except Exception as e:
+        await safe_edit(query, f"❌ حصل خطأ: {str(e)}")
+
+
+async def handle_full_explanation(query, context, user):
+    """شرح تفصيلي (فصول)"""
+    await safe_edit(
+        query,
+        "📚 *جاري تحضير الشرح التفصيلي...*\n\n"
+        "_بنجهز الفصول، استنى 20-30 ثانية..._"
+    )
+
+    pdf_text = context.user_data.get("pdf_text", "")
+    if not pdf_text:
+        analysis = get_pdf_analysis(user.id)
+        if analysis:
+            pdf_text = analysis["pdf_text"]
+
+    if not pdf_text:
+        await safe_edit(query, "⚠️ الملف مش موجود. ارفعه تاني.")
+        return
+
+    user_college = get_user_college(user.id)
+    user_subjects = get_user_subjects(user.id)
+    user_analysis = get_analysis(user.id)
+    learning_style = user_analysis.get("learning_style") if user_analysis else None
+
+    try:
+        chapters = generate_chapters(pdf_text, user_college, user_subjects, learning_style)
+
+        if not chapters:
+            await safe_edit(query, "❌ مقدرناش نقسم المحتوى.")
+            return
+
+        context.user_data["chapters"] = chapters
+
+        # احفظ في قاعدة البيانات
+        save_pdf_analysis(
+            user.id,
+            context.user_data.get("pdf_file_name", "محاضرة"),
+            context.user_data.get("pdf_page_count", 0),
+            pdf_text[:30000],
+            context.user_data.get("quick_summary", ""),
+            json.dumps(chapters, ensure_ascii=False)
+        )
+
+        # عرض الفصول
+        text = (
+            f"📚 *الشرح التفصيلي*\n\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"الملف مقسم لـ *{len(chapters)} فصول*:\n\n"
+        )
+
+        for i, ch in enumerate(chapters):
+            title = ch.get("title", f"الفصل {i+1}")
+            parts_count = len(ch.get("parts", []))
+            text += f"📖 *{title}* ({parts_count} أجزاء)\n"
+
+        text += "\n━━━━━━━━━━━━━━━\n\nاختار الفصل اللي عايز تبدأ بيه:"
+
+        await safe_edit(
+            query,
+            text,
+            reply_markup=chapters_menu(chapters)
+        )
+
+    except Exception as e:
+        await safe_edit(query, f"❌ حصل خطأ: {str(e)}")
+
+
+async def show_chapters_list(query, context, user):
+    """عرض قائمة الفصول"""
+    chapters = context.user_data.get("chapters", [])
+
+    if not chapters:
+        analysis = get_pdf_analysis(user.id)
+        if analysis and analysis.get("chapters_json"):
+            try:
+                chapters = json.loads(analysis["chapters_json"])
+                context.user_data["chapters"] = chapters
+            except:
+                pass
+
+    if not chapters:
+        await safe_edit(query, "⚠️ لسه معملتش شرح تفصيلي.")
+        return
+
+    text = (
+        f"📋 *فهرس الفصول*\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+    )
+
+    for i, ch in enumerate(chapters):
+        title = ch.get("title", f"الفصل {i+1}")
+        parts_count = len(ch.get("parts", []))
+        text += f"📖 *{title}* ({parts_count} أجزاء)\n"
+
+    await safe_edit(
+        query,
+        text,
+        reply_markup=chapters_menu(chapters)
+    )
+
+
+async def show_chapter_parts(query, context, user, chapter_idx):
+    """عرض أجزاء الفصل"""
+    chapters = context.user_data.get("chapters", [])
+
+    if not chapters or chapter_idx >= len(chapters):
+        await safe_edit(query, "⚠️ الفصل مش موجود.")
+        return
+
+    chapter = chapters[chapter_idx]
+    title = chapter.get("title", f"الفصل {chapter_idx+1}")
+    parts = chapter.get("parts", [])
+
+    text = (
+        f"📖 *{title}*\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+    )
+
+    for i, part in enumerate(parts):
+        part_title = part.get("title", f"الجزء {i+1}")
+        text += f"📌 *{part_title}*\n"
+
+    text += "\n━━━━━━━━━━━━━━━\n\n"
+    text += "🎯 *إيه اللي عايزه؟*"
+
+    await safe_edit(
+        query,
+        text,
+        reply_markup=chapter_options_menu()
+    )
+
+
+async def handle_explain_chapter(query, context, user):
+    """شرح الفصل كامل"""
+    chapter_idx = context.user_data.get("current_chapter", 0)
+    chapters = context.user_data.get("chapters", [])
+
+    if not chapters or chapter_idx >= len(chapters):
+        await safe_edit(query, "⚠️ الفصل مش موجود.")
+        return
+
+    chapter = chapters[chapter_idx]
+    title = chapter.get("title", f"الفصل {chapter_idx+1}")
+    parts = chapter.get("parts", [])
+
+    await safe_edit(
+        query,
+        f"💡 *جاري شرح {title}...*\n\n_استنى 15-20 ثانية..._"
+    )
+
+    pdf_text = context.user_data.get("pdf_text", "")
+    if not pdf_text:
+        analysis = get_pdf_analysis(user.id)
+        if analysis:
+            pdf_text = analysis["pdf_text"]
+
+    if not pdf_text:
+        await safe_edit(query, "⚠️ الملف مش موجود. ارفعه تاني.")
+        return
+
+    user_college = get_user_college(user.id)
+    user_subjects = get_user_subjects(user.id)
+    user_analysis = get_analysis(user.id)
+
+    try:
+        explanation = generate_chapter_explanation(
+            pdf_text, title, parts, user_analysis, user_college, user_subjects
+        )
+        formatted = format_for_telegram(explanation)
+
+        # نضيف رقم الفصل
+        full_text = (
+            f"<b>📖 {title}</b>\n\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"{formatted}\n\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"📍 <b>الفصل {chapter_idx+1} / {len(chapters)}</b>"
+        )
+
+        await safe_edit(
+            query,
+            full_text,
+            parse_mode="HTML",
+            reply_markup=back_to_chapters_menu()
+        )
+
+        increment_usage(user.id, POINTS_REWARDS["full_explanation"])
+
+    except Exception as e:
+        await safe_edit(query, f"❌ حصل خطأ: {str(e)}")
+
+
+async def handle_pdf_analysis(query, context, user, analysis_type):
+    """تحليل PDF (الطريقة القديمة)"""
     pdf_text = context.user_data.get("pdf_text")
     if not pdf_text:
         await safe_edit(query, "⚠️ الملف مش موجود. ارفعه تاني.")
@@ -702,11 +1274,9 @@ async def handle_pdf_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     types = {
         "summary": "📝 الملخص",
-        "explanation": "📚 الشرح التفصيلي",
         "terms": "🔤 المصطلحات",
         "quiz": "🎯 الكويز",
         "examples": "💡 الأمثلة",
-        "problems": "🧮 المسائل",
     }
     type_name = types.get(analysis_type, "📝 التحليل")
 
@@ -717,15 +1287,17 @@ async def handle_pdf_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
         user_college = get_user_college(user.id)
 
         result = analyze_pdf_content(pdf_text, analysis_type, user_subjects, user_college)
-        result = clean_text(result)
+        formatted = format_for_telegram(result)
 
-        full_text = f"{type_name}:\n\n{result}"
-
-        if len(full_text) <= 4000:
-            await safe_edit(query, full_text)
+        if len(formatted) <= 4000:
+            await safe_edit(query, formatted, parse_mode="HTML", reply_markup=quick_actions_menu())
         else:
-            await safe_edit(query, full_text[:4000])
-            await update.effective_chat.send_message(full_text[4000:])
+            await safe_edit(query, formatted[:4000], parse_mode="HTML")
+            await query.message.reply_text(
+                formatted[4000:],
+                parse_mode="HTML",
+                reply_markup=quick_actions_menu()
+            )
 
         increment_usage(user.id, POINTS_REWARDS["pdf_analysis"])
 
@@ -739,161 +1311,97 @@ async def handle_pomodoro_buttons(update: Update, context: ContextTypes.DEFAULT_
     data = query.data
     user = query.from_user
 
-    # ===== بداية Pomodoro =====
     if data == "start_pomodoro":
         await query.answer()
-
         if not has_subjects(user.id):
-            await safe_edit(
-                query,
-                "⚠️ *ضيف موادك الأول!*\n\n"
-                "عشان أقدر أعملك جلسات مذاكرة،\n"
-                "محتاج أعرف موادك.",
-                reply_markup=subjects_menu()
-            )
+            await safe_edit(query, "⚠️ ضيف موادك الأول!", reply_markup=subjects_menu())
             return
-
         await safe_edit(
             query,
-            "⏱️ *Pomodoro — جلسة مذاكرة*\n\n"
-            "━━━━━━━━━━━━━━━\n\n"
-            "جلسة مذاكرة مركزة، وبعدها راحة.\n\n"
-            "اختار المادة والوقت:",
+            "⏱️ *Pomodoro — جلسة مذاكرة*\n\nاختار:",
             reply_markup=pomodoro_start_menu()
         )
         return
 
-    if data == "pomodoro_begin":
+    if data == "pomodoro_begin" or data == "pomodoro_choose_subject":
         await query.answer()
-
         subjects = get_user_subjects(user.id)
-        await safe_edit(
-            query,
-            "📚 *اختار المادة:*",
-            reply_markup=pomodoro_subjects_menu(subjects)
-        )
-        return
-
-    if data == "pomodoro_choose_subject":
-        await query.answer()
-
-        subjects = get_user_subjects(user.id)
-        await safe_edit(
-            query,
-            "📚 *اختار المادة:*",
-            reply_markup=pomodoro_subjects_menu(subjects)
-        )
+        await safe_edit(query, "📚 *اختار المادة:*", reply_markup=pomodoro_subjects_menu(subjects))
         return
 
     if data.startswith("pomodoro_subj_"):
         await query.answer()
         subject = data.replace("pomodoro_subj_", "")
         context.user_data["pomodoro_subject"] = subject
-
         await safe_edit(
             query,
-            f"📚 المادة: *{subject}*\n\n"
-            f"⏱️ اختار مدة الجلسة:",
+            f"📚 المادة: *{subject}*\n\n⏱️ اختار مدة الجلسة:",
             reply_markup=pomodoro_duration_menu()
         )
         return
 
-    if data == "pomodoro_15" or data == "pomodoro_25" or data == "pomodoro_45" or data == "pomodoro_60":
+    if data in ["pomodoro_15", "pomodoro_25", "pomodoro_45", "pomodoro_60"]:
         await query.answer()
         duration = int(data.replace("pomodoro_", ""))
         subject = context.user_data.get("pomodoro_subject", "مذاكرة")
-
         await safe_edit(
             query,
-            f"⏱️ *جلسة Pomodoro*\n\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"📚 المادة: *{subject}*\n"
-            f"⏰ المدة: *{duration} دقيقة*\n\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"🚀 *يلا نبدأ!*\n\n"
-            f"💡 نصيحة: اقفل الموبايل وركز!",
+            f"⏱️ *جلسة Pomodoro*\n\n📚 {subject}\n⏰ {duration} دقيقة\n\n🚀 يلا نبدأ!",
             reply_markup=pomodoro_active_menu()
         )
         context.user_data["pomodoro_duration"] = duration
         return
 
-    # ===== خلصت الجلسة =====
     if data == "pomodoro_done":
         await query.answer()
         subject = context.user_data.get("pomodoro_subject", "مذاكرة")
         duration = context.user_data.get("pomodoro_duration", 25)
 
-        # احفظ الجلسة
         save_pomodoro_session(user.id, subject, duration)
-
-        # احسب النقاط
         points_earned = POINTS_REWARDS["pomodoro_session"]
 
-        # شوف لو خلص 4 جلسات النهاردة
         today_count = get_today_pomodoro_count(user.id)
-        bonus_points = 0
-        if today_count >= 4:
-            bonus_points = POINTS_REWARDS["pomodoro_4_sessions"]
+        bonus_points = POINTS_REWARDS["pomodoro_4_sessions"] if today_count >= 4 else 0
 
-        total_points = points_earned + bonus_points
-        add_points(user.id, total_points)
+        add_points(user.id, points_earned + bonus_points)
 
         text = (
             f"🎉 *عاش! جلسة مذاكرة خلصت*\n\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"📚 المادة: *{subject}*\n"
-            f"⏰ المدة: *{duration} دقيقة*\n"
+            f"📚 {subject}\n"
+            f"⏰ {duration} دقيقة\n"
             f"💎 كسبت: *{points_earned} نقطة*\n"
         )
 
         if bonus_points > 0:
-            text += f"🎁 بونص 4 جلسات: *+{bonus_points} نقطة*\n"
+            text += f"🎁 بونص: *+{bonus_points} نقطة*\n"
 
-        text += (
-            f"\n🔥 *جلسات النهاردة:* {today_count}\n\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"💪 عاش يا بطل!"
-        )
+        text += f"\n🔥 *جلسات النهاردة:* {today_count}"
 
         await safe_edit(query, text, reply_markup=pomodoro_done_menu())
         return
 
     if data == "pomodoro_pause":
-        await query.answer("⏸️ الجلسة شغالة، كمّل!")
+        await query.answer("⏸️ الجلسة شغالة!")
         return
 
     if data == "pomodoro_cancel":
         await query.answer()
         context.user_data.pop("pomodoro_subject", None)
         context.user_data.pop("pomodoro_duration", None)
-
-        await safe_edit(
-            query,
-            "❌ *تم إلغاء الجلسة*\n\n"
-            "تقدر تبدأ تاني في أي وقت من ⏱️ ذاكر معايا"
-        )
+        await safe_edit(query, "❌ تم إلغاء الجلسة")
         return
 
     if data == "pomodoro_again":
         await query.answer()
         subjects = get_user_subjects(user.id)
-        await safe_edit(
-            query,
-            "📚 *اختار المادة:*",
-            reply_markup=pomodoro_subjects_menu(subjects)
-        )
+        await safe_edit(query, "📚 *اختار المادة:*", reply_markup=pomodoro_subjects_menu(subjects))
         return
 
     if data == "pomodoro_break":
         await query.answer()
         await safe_edit(
             query,
-            "☕ *راحة 5 دقايق*\n\n"
-            "━━━━━━━━━━━━━━━\n\n"
-            "• اشرب حاجة ساقعة 🥤\n"
-            "• اتمشى شوية 🚶\n"
-            "• متفتحش موبايل 📱\n\n"
-            "بعد 5 دقايق، ارجع كمّل!",
+            "☕ *راحة 5 دقايق*\n\n• اشرب حاجة\n• اتمشى\n• متفتحش موبايل",
             reply_markup=pomodoro_done_menu()
         )
         return
@@ -905,28 +1413,19 @@ async def handle_plan_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
     data = query.data
     user = query.from_user
 
-    # ===== عرض الخطة الأسبوعية =====
     if data == "show_weekly_plan":
         await query.answer()
 
         if not has_analysis(user.id):
             await safe_edit(
                 query,
-                "⚠️ *لسه محتاج تحليل الأول!*\n\n"
-                "━━━━━━━━━━━━━━━\n\n"
-                "عشان أقدر أعملك خطة مخصصة،\n"
-                "محتاج أعرفك أكتر.",
+                "⚠️ محتاج تحليل الأول!",
                 reply_markup=plan_needs_analysis_menu()
             )
             return
 
         if not has_study_plan(user.id):
-            # اعمل خطة جديدة
-            await safe_edit(
-                query,
-                "⏳ *جاري إعداد خطتك...*\n\n"
-                "استنى شوية، بعمل خطة أسبوعية مخصصة 📊"
-            )
+            await safe_edit(query, "⏳ *جاري إعداد خطتك...*")
 
             analysis = get_analysis(user.id)
             subjects = get_user_subjects(user.id)
@@ -939,86 +1438,65 @@ async def handle_plan_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
             except Exception as e:
                 plan_text = f"❌ حصل خطأ: {str(e)}"
 
-            if len(plan_text) <= 4000:
-                await safe_edit(query, plan_text, reply_markup=plan_menu())
+            formatted = format_for_telegram(plan_text)
+
+            if len(formatted) <= 4000:
+                await safe_edit(query, formatted, parse_mode="HTML", reply_markup=plan_menu())
             else:
-                await safe_edit(query, plan_text[:4000])
-                await update.effective_chat.send_message(
-                    plan_text[4000:],
-                    parse_mode="Markdown",
+                await safe_edit(query, formatted[:4000], parse_mode="HTML")
+                await query.message.reply_text(
+                    formatted[4000:],
+                    parse_mode="HTML",
                     reply_markup=plan_menu()
                 )
             return
 
-        # عنده خطة
         plan = get_study_plan(user.id)
-        plan_text = plan["plan_text"]
+        formatted = format_for_telegram(plan["plan_text"])
 
-        if len(plan_text) <= 4000:
-            await safe_edit(query, plan_text, reply_markup=plan_menu())
+        if len(formatted) <= 4000:
+            await safe_edit(query, formatted, parse_mode="HTML", reply_markup=plan_menu())
         else:
-            await safe_edit(query, plan_text[:4000])
-            await update.effective_chat.send_message(
-                plan_text[4000:],
-                parse_mode="Markdown",
+            await safe_edit(query, formatted[:4000], parse_mode="HTML")
+            await query.message.reply_text(
+                formatted[4000:],
+                parse_mode="HTML",
                 reply_markup=plan_menu()
             )
         return
 
-    # ===== عرض خطة النهاردة =====
     if data == "show_today_plan":
         await query.answer()
 
         if not has_study_plan(user.id):
-            await safe_edit(
-                query,
-                "⚠️ اعمل خطتك الأول!",
-                reply_markup=plan_menu()
-            )
+            await safe_edit(query, "⚠️ اعمل خطتك الأول!", reply_markup=plan_menu())
             return
 
-        # نجيب خطة الأسبوع
         plan = get_study_plan(user.id)
 
-        # نطلب من Gemini يستخرج النهاردة
+        from datetime import datetime as dt
         days_ar = ["الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت", "الأحد"]
-        today_idx = datetime.now().weekday()
-        today_name = days_ar[today_idx]
+        today_name = days_ar[dt.now().weekday()]
 
         try:
-            prompt = f"""من الخطة الأسبوعية دي، استخرجلي خطة يوم {today_name} بس.
+            prompt = f"""من الخطة دي، استخرجلي خطة يوم {today_name} بس:
 
-الخطة:
 {plan['plan_text']}
 
-اكتب:
-📅 **{today_name}**
-
-📚 [المادة] - [المدة]
-⏰ [الوقت]
-
-💡 [نصيحة سريعة]
-
-بالعربي، اكتب بإيجاز."""
-
+اكتب بالعربي بإيجاز."""
             response = model.generate_content(prompt)
-            today_plan = clean_text(response.text)
+            today_plan = format_for_telegram(response.text)
         except Exception as e:
             today_plan = f"❌ حصل خطأ: {str(e)}"
 
-        await safe_edit(query, today_plan, reply_markup=plan_menu())
+        await safe_edit(query, today_plan, parse_mode="HTML", reply_markup=plan_menu())
         return
 
-    # ===== جدد الخطة =====
     if data == "regenerate_plan":
         await query.answer()
 
         if not has_analysis(user.id):
-            await safe_edit(
-                query,
-                "⚠️ محتاج تحليل الأول!",
-                reply_markup=plan_needs_analysis_menu()
-            )
+            await safe_edit(query, "⚠️ محتاج تحليل!", reply_markup=plan_needs_analysis_menu())
             return
 
         await safe_edit(query, "⏳ *جاري تجديد الخطة...*")
@@ -1034,13 +1512,15 @@ async def handle_plan_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
         except Exception as e:
             plan_text = f"❌ حصل خطأ: {str(e)}"
 
-        if len(plan_text) <= 4000:
-            await safe_edit(query, plan_text, reply_markup=plan_menu())
+        formatted = format_for_telegram(plan_text)
+
+        if len(formatted) <= 4000:
+            await safe_edit(query, formatted, parse_mode="HTML", reply_markup=plan_menu())
         else:
-            await safe_edit(query, plan_text[:4000])
-            await update.effective_chat.send_message(
-                plan_text[4000:],
-                parse_mode="Markdown",
+            await safe_edit(query, formatted[:4000], parse_mode="HTML")
+            await query.message.reply_text(
+                formatted[4000:],
+                parse_mode="HTML",
                 reply_markup=plan_menu()
             )
         return
@@ -1056,29 +1536,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ===== أزرار المواد =====
     if data == "skip_subjects":
-        await safe_edit(
-            query,
-            "👍 تمام! تقدر تضيف موادك في أي وقت من:\n"
-            "🏆 حسابي → 📚 موادي"
-        )
+        await safe_edit(query, "👍 تمام!")
         context.user_data["awaiting_college"] = True
         await update.effective_chat.send_message(
-            "🎓 *في أي كلية بتدرس؟*\n\n"
-            "اكتب اسم كليتك (مثال: حاسبات، طب، هندسة، تجارة، آداب...)",
+            "🎓 *في أي كلية بتدرس؟*\n\nاكتب اسم كليتك:",
             parse_mode="Markdown"
         )
         return
 
     if data == "enter_subjects":
-        await safe_edit(
-            query,
-            "📚 *اكتب موادك دلوقتي*\n\n"
-            "اكتب كل مادة في سطر:\n"
-            "`Algorithms`\n"
-            "`Database`\n"
-            "`Machine Learning`\n\n"
-            "📝 مستنيك..."
-        )
+        await safe_edit(query, "📚 *اكتب موادك دلوقتي*\n\nكل مادة في سطر:")
         context.user_data["awaiting_subjects"] = True
         return
 
@@ -1089,28 +1556,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             subjects_list = "\n".join([f"{i+1}. {s}" for i, s in enumerate(subjects)])
             text = f"📚 *موادي ({len(subjects)}):*\n\n{subjects_list}"
-
         await safe_edit(query, text, reply_markup=subjects_menu())
         return
 
     if data == "add_subject":
-        await safe_edit(
-            query,
-            "➕ *ضيف مادة*\n\n"
-            "اكتب اسم المادة (أو اكتبهم كلهم، كل مادة في سطر).\n\n"
-            "📝 مستنيك..."
-        )
+        await safe_edit(query, "➕ *ضيف مادة*\n\nاكتب اسم المادة:")
         context.user_data["awaiting_subjects"] = True
         return
 
     if data == "list_subjects":
         subjects = get_user_subjects(user.id)
         if not subjects:
-            text = "📚 لسه مفيش مواد مسجلة."
+            text = "📚 لسه مفيش مواد."
         else:
             subjects_list = "\n".join([f"{i+1}. {s}" for i, s in enumerate(subjects)])
             text = f"📚 *موادي ({len(subjects)}):*\n\n{subjects_list}"
-
         await safe_edit(query, text, reply_markup=subjects_menu())
         return
 
@@ -1149,31 +1609,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit(query, "✅ تم مسح كل المواد.", reply_markup=subjects_menu())
         return
 
-    # ===== زر خطتي (من التحليل) =====
     if data == "show_my_plan":
         if not has_analysis(user.id):
             await safe_edit(
                 query,
-                "⚠️ لسه محتاج تحليل الأول!",
+                "⚠️ محتاج تحليل الأول!",
                 reply_markup=plan_needs_analysis_menu()
             )
             return
-
-        await safe_edit(
-            query,
-            "📊 *خطتك المخصصة*\n\n"
-            "اختار:",
-            reply_markup=plan_menu()
-        )
+        await safe_edit(query, "📊 *خطتك المخصصة*", reply_markup=plan_menu())
         return
 
-    # ===== الأساسيات =====
     if data == "back_home":
         await safe_edit(query, "🏠 *القائمة الرئيسية*\n\nاختار من الأزرار تحت 👇")
         return
 
     if data == "upload_pdf":
-        await safe_edit(query, "📄 *ارفع ملف PDF دلوقتي*\n\nابعتلي الملف وأنا هحلله.")
+        await safe_edit(query, "📄 *ارفع ملف PDF دلوقتي*\n\nابعتلي الملف.")
         return
 
     if data == "upload_image":
@@ -1181,19 +1633,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "quiz_from_pdf":
-        await safe_edit(query, "🎯 *كويز من PDF*\n\nارفع ملف PDF الأول.")
+        await safe_edit(query, "🎯 *كويز من PDF*\n\nارفع PDF الأول.")
         return
 
-    if data == "quiz_random":
-        await safe_edit(query, "🎲 *كويز عشوائي*\n\n_قريب إن شاء الله_ 🚧")
-        return
-
-    if data == "quiz_subject":
-        await safe_edit(query, "📚 *كويز من مادة*\n\n_قريب إن شاء الله_ 🚧")
-        return
-
-    if data == "quiz_daily":
-        await safe_edit(query, "🎁 *الكويز اليومي*\n\n_قريب إن شاء الله_ 🚧")
+    if data in ["quiz_random", "quiz_subject", "quiz_daily"]:
+        await safe_edit(query, "🎯 *قريب إن شاء الله* 🚧")
         return
 
     if data == "explain_concept":
@@ -1238,8 +1682,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "admin": "👑 أدمن",
         }
 
-        subjects_text = "، ".join(subjects) if subjects else "لسه"
-
         text = (
             f"👤 *بياناتك*\n\n"
             f"📛 الاسم: {user.first_name}\n"
@@ -1249,14 +1691,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🏆 المستوى: {level_info['name']}\n"
             f"✅ متبقي اليوم: {remaining} استخدام\n"
             f"🎓 الكلية: {college or 'لسه'}\n"
-            f"📚 المواد: {subjects_text}\n"
         )
-
         await safe_edit(query, text)
         return
 
     if data == "account_stats":
-        # إحصائيات المستخدم
         pomo = get_pomodoro_stats(user.id, days=7)
         points, level = get_user_points(user.id)
 
@@ -1276,10 +1715,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "account_upgrade":
         await safe_edit(
             query,
-            f"💎 *ترقية الحساب*\n\n"
-            f"للترقية تواصل مع:\n"
-            f"👨‍💻 {DEVELOPER_NAME}\n"
-            f"📱 {DEVELOPER_USERNAME}"
+            f"💎 *ترقية الحساب*\n\nللترقية تواصل مع:\n👨‍💻 {DEVELOPER_NAME}\n📱 {DEVELOPER_USERNAME}"
         )
         return
 
@@ -1287,18 +1723,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit(query, ABOUT_MESSAGE)
         return
 
-    # ===== لوحة التحكم (Admin) =====
+    # ===== لوحة التحكم =====
     if data == "admin_stats" and user.id in ADMIN_IDS:
         stats = get_detailed_stats()
 
         text = (
             f"📊 *إحصائيات البوت*\n\n"
-            f"👥 *إجمالي المستخدمين:* {stats['total_users']}\n"
-            f"🆕 *نشطين النهاردة:* {stats['active_today']}\n"
-            f"⭐ *Premium:* {stats['premium_users']}\n"
-            f"👑 *Admins:* {stats['admin_users']}\n"
-            f"📨 *إجمالي الطلبات:* {stats['total_requests']}\n"
-            f"💎 *إجمالي النقاط:* {stats['total_points']}\n\n"
+            f"👥 المستخدمين: {stats['total_users']}\n"
+            f"🆕 نشطين النهاردة: {stats['active_today']}\n"
+            f"⭐ Premium: {stats['premium_users']}\n"
+            f"👑 Admins: {stats['admin_users']}\n"
+            f"📨 إجمالي الطلبات: {stats['total_requests']}\n"
+            f"💎 إجمالي النقاط: {stats['total_points']}\n\n"
         )
 
         if stats["top_users"]:
@@ -1338,7 +1774,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 plan_emoji = {"free": "🆓", "premium": "⭐", "admin": "👑", "banned": "🚫"}.get(plan, "🆓")
                 text2 += f"{plan_emoji} *{first_name or 'مستخدم'}* — {points} 💎\n"
                 text2 += f"   🆔 `{u_id}`\n\n"
-
             await update.effective_chat.send_message(text2, parse_mode="Markdown")
 
         return
@@ -1346,15 +1781,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "admin_broadcast" and user.id in ADMIN_IDS:
         await safe_edit(
             query,
-            "📢 *بث رسالة*\n\n"
-            "ابعتلي الرسالة اللي عايز تبعتها لكل المستخدمين.\n\n"
-            "_ملاحظة: الميزة دي قريب إن شاء الله_ 🚧",
+            "📢 *بث رسالة*\n\n_قريب إن شاء الله_ 🚧",
             reply_markup=admin_panel_menu()
         )
         return
 
 
-# ===== دالة عرض الأسئلة =====
+# ===== عرض الأسئلة =====
 async def show_next_question(query, context, step):
     user = query.from_user
 
@@ -1391,13 +1824,9 @@ async def show_next_question(query, context, step):
         return
 
 
-# ===== دالة إنهاء التحليل =====
+# ===== إنهاء التحليل =====
 async def finish_analysis(query, context, user):
-    await safe_edit(
-        query,
-        "⏳ *جاري تحليل إجاباتك...*\n\n"
-        "استنى شوية، بعمل تقريرك 📊"
-    )
+    await safe_edit(query, "⏳ *جاري تحليل إجاباتك...*")
 
     answers = context.user_data.get("analysis_answers", {})
 
@@ -1426,10 +1855,10 @@ async def finish_analysis(query, context, user):
 5. الهدف: {get_subject_display(goal)}
 6. الامتحانات: {get_subject_display(exam_timing)}
 
-اقرأ الإجابات دي، وطلع تقرير بالشكل ده:
+اقرأ الإجابات، وطلع تقرير بالعربي:
 
 🧠 نمطك الدراسي:
-- (وصف مختصر لشخصيته الدراسية)
+- (وصف)
 
 ⚡ نقاط قوتك:
 • (3 نقاط)
@@ -1438,17 +1867,14 @@ async def finish_analysis(query, context, user):
 • (3 نقاط)
 
 💡 نصيحة مخصصة:
-• (2-3 نصائح عملية)
-
-خليك موجز ومباشر. استخدم إيموجي. بالعربي.
+• (2-3 نصائح)
 """
 
         response = model.generate_content(prompt)
-        analysis_result = response.text
-        analysis_result = clean_text(analysis_result)
+        analysis_result = clean_text(response.text)
 
     except Exception as e:
-        analysis_result = "حصل خطأ في التحليل. حاول تاني."
+        analysis_result = "حصل خطأ في التحليل."
         print(f"Error: {e}")
 
     save_analysis(
@@ -1506,7 +1932,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ بس ملفات PDF مسموحة.")
         return
 
-    waiting = await update.message.reply_text("📄 جاري تحميل ومعالجة الملف...")
+    waiting = await update.message.reply_text("📄 جاري تحميل الملف...")
 
     pdf_path = f"temp_{user.id}.pdf"
 
@@ -1521,14 +1947,24 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await waiting.edit_text("❌ الملف فاضي أو مش مقروء.")
             return
 
+        # احفظ في الذاكرة
         context.user_data["pdf_text"] = pdf_text
+        context.user_data["pdf_file_name"] = document.file_name
+        context.user_data["pdf_page_count"] = len(pdf_text.split("\n")) // 40  # تقدير
+
+        # امسح تحليل PDF القديم
+        clear_pdf_analysis(user.id)
+        context.user_data.pop("chapters", None)
+        context.user_data.pop("quick_summary", None)
 
         await waiting.edit_text(
             f"✅ *تم تحميل الملف بنجاح!*\n\n"
+            f"📄 *الملف:* {document.file_name}\n"
             f"📝 *حجم المحتوى:* {len(pdf_text)} حرف\n\n"
-            f"🎯 *اختار إيه اللي عايزه:*",
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"🎯 *إيه اللي عايزه؟*",
             parse_mode="Markdown",
-            reply_markup=analysis_options_menu()
+            reply_markup=quick_actions_menu()
         )
 
         if os.path.exists(pdf_path):
@@ -1546,6 +1982,54 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
     get_or_create_user(user.id, user.username, user.first_name)
+
+    # ===== سؤال عن PDF =====
+    if context.user_data.get("awaiting_pdf_question"):
+        context.user_data["awaiting_pdf_question"] = False
+
+        pdf_text = context.user_data.get("pdf_text", "")
+        if not pdf_text:
+            analysis = get_pdf_analysis(user.id)
+            if analysis:
+                pdf_text = analysis["pdf_text"]
+
+        if not pdf_text:
+            await update.message.reply_text("⚠️ مفيش ملف محفوظ.")
+            return
+
+        waiting = await update.message.reply_text("💬 جاري البحث في الملف...")
+
+        try:
+            if len(pdf_text) > 25000:
+                pdf_text = pdf_text[:25000] + "..."
+
+            prompt = f"""إنت مساعد طالب جامعي.
+
+المحتوى:
+{pdf_text}
+
+━━━━━━━━━━━━━━━
+
+سؤال الطالب: {text}
+
+جاوب بالعربي على السؤال ده بناءً على المحتوى اللي فوق.
+لو المعلومة مش موجودة، قول "المعلومة دي مش موجودة في الملف".
+خليك موجز ومفيد."""
+
+            response = model.generate_content(prompt)
+            formatted = format_for_telegram(response.text)
+
+            await waiting.edit_text(
+                f"💬 *سؤالك:* {text}\n\n"
+                f"━━━━━━━━━━━━━━━\n\n"
+                f"{formatted}",
+                parse_mode="HTML",
+                reply_markup=quick_actions_menu()
+            )
+
+        except Exception as e:
+            await waiting.edit_text(f"❌ حصل خطأ: {str(e)}")
+        return
 
     # ===== إدخال المواد =====
     if context.user_data.get("awaiting_subjects"):
@@ -1566,20 +2050,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             added_text = "\n".join([f"✅ {s}" for s in added])
             await update.message.reply_text(
                 f"🎉 *تمام! حفظت موادك:*\n\n{added_text}\n\n"
-                f"━━━━━━━━━━━━━━━\n\n"
                 f"🎓 *في أي كلية بتدرس؟*\n"
-                f"اكتب اسم كليتك (مثال: حاسبات، طب، هندسة، تجارة، آداب...)",
+                f"اكتب اسم كليتك:",
                 parse_mode="Markdown"
             )
-            context.user_data["awaiting_college"] = True
         else:
             await update.message.reply_text(
                 "⚠️ المواد دي موجودة بالفعل.\n\n"
-                "🎓 *في أي كلية بتدرس؟*\n"
-                "اكتب اسم كليتك:",
+                "🎓 *في أي كلية بتدرس؟*",
                 parse_mode="Markdown"
             )
-            context.user_data["awaiting_college"] = True
+        context.user_data["awaiting_college"] = True
         return
 
     # ===== إدخال الكلية =====
@@ -1592,7 +2073,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"🎉 *تمام! كلية: {college}*\n\n"
             f"دلوقتي عارف كل حاجة عنك 💪\n\n"
-            f"━━━━━━━━━━━━━━━\n\n"
             f"ابدأ من الأزرار تحت 👇",
             parse_mode="Markdown",
             reply_markup=main_menu(is_admin=(user.id in ADMIN_IDS))
@@ -1637,24 +2117,28 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         await handle_message(update, context)
         return
 
+    if context.user_data.get("awaiting_pdf_question"):
+        await handle_message(update, context)
+        return
+
     if context.user_data.get("in_analysis"):
         return
 
+    # ===== الأزرار =====
     if text == "📄 تحليل PDF":
         await update.message.reply_text(
-            "📄 *ارفع ملف PDF دلوقتي*\n\nابعتلي الملف وأنا هحلله.",
+            "📄 *ارفع ملف PDF دلوقتي*\n\nابعتلي الملف.",
             parse_mode="Markdown"
         )
         return
 
     if text == "📸 صورة":
-        await update.message.reply_text("📸 *ارفع صورة*\n\n_قريب إن شاء الله_ 🚧")
+        await update.message.reply_text("📸 *قريب إن شاء الله* 🚧")
         return
 
     if text == "🎯 كويز":
         await update.message.reply_text(
             "🎯 *اختار نوع الكويز:*",
-            parse_mode="Markdown",
             reply_markup=quiz_menu()
         )
         return
@@ -1662,7 +2146,6 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
     if text == "📚 شرح":
         await update.message.reply_text(
             "📚 *اختار نوع الشرح:*",
-            parse_mode="Markdown",
             reply_markup=explain_menu()
         )
         return
@@ -1670,7 +2153,6 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
     if text == "🌍 ترجمة":
         await update.message.reply_text(
             "🌍 *اختار نوع الترجمة:*",
-            parse_mode="Markdown",
             reply_markup=translate_menu()
         )
         return
@@ -1678,7 +2160,6 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
     if text == "📝 تلخيص":
         await update.message.reply_text(
             "📝 *اختار نوع التلخيص:*",
-            parse_mode="Markdown",
             reply_markup=summarize_menu()
         )
         return
@@ -1686,7 +2167,6 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
     if text == "🏆 حسابي":
         await update.message.reply_text(
             "🏆 *حسابك:*",
-            parse_mode="Markdown",
             reply_markup=account_menu()
         )
         return
@@ -1731,20 +2211,14 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
     if text == "📊 خطتي":
         if not has_analysis(user.id):
             await update.message.reply_text(
-                "⚠️ *لسه محتاج تحليل الأول!*\n\n"
-                "━━━━━━━━━━━━━━━\n\n"
-                "عشان أقدر أعمللك خطة مخصصة،\n"
-                "محتاج أعرفك أكتر.\n\n"
-                "عمل التحليل بياخد 30 ثانية بس!",
+                "⚠️ *لسه محتاج تحليل الأول!*",
                 parse_mode="Markdown",
                 reply_markup=plan_needs_analysis_menu()
             )
             return
 
         await update.message.reply_text(
-            "📊 *خطتك المخصصة*\n\n"
-            "اختار:",
-            parse_mode="Markdown",
+            "📊 *خطتك المخصصة*\n\nاختار:",
             reply_markup=plan_menu()
         )
         return
@@ -1752,36 +2226,26 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
     if text == "⏱️ ذاكر معايا":
         if not has_subjects(user.id):
             await update.message.reply_text(
-                "⚠️ *ضيف موادك الأول!*\n\n"
-                "عشان أقدر أعملك جلسات مذاكرة،\n"
-                "محتاج أعرف موادك.",
+                "⚠️ *ضيف موادك الأول!*",
                 parse_mode="Markdown",
                 reply_markup=subjects_menu()
             )
             return
 
         await update.message.reply_text(
-            "⏱️ *Pomodoro — جلسة مذاكرة*\n\n"
-            "━━━━━━━━━━━━━━━\n\n"
-            "جلسة مذاكرة مركزة، وبعدها راحة.\n\n"
-            "اختار المادة والوقت:",
-            parse_mode="Markdown",
+            "⏱️ *Pomodoro — جلسة مذاكرة*\n\nاختار:",
             reply_markup=pomodoro_start_menu()
         )
         return
 
     if text == "🏆 إنجازاتي":
-        await update.message.reply_text(
-            "🏆 *إنجازاتك*\n\n"
-            "_قريب إن شاء الله_ 🚧"
-        )
+        await update.message.reply_text("🏆 *قريب إن شاء الله* 🚧")
         return
 
     if text == "🎛️ لوحة التحكم":
         if user.id in ADMIN_IDS:
             await update.message.reply_text(
-                "🎛️ *لوحة التحكم*\n\nاختار من الأزرار:",
-                parse_mode="Markdown",
+                "🎛️ *لوحة التحكم*",
                 reply_markup=admin_panel_menu()
             )
         return
@@ -1815,7 +2279,7 @@ def main():
 
     # ترتيب مهم
     app.add_handler(CallbackQueryHandler(handle_analysis_buttons, pattern="^(analysis_|ans_)"))
-    app.add_handler(CallbackQueryHandler(handle_pdf_buttons, pattern="^pdf_"))
+    app.add_handler(CallbackQueryHandler(handle_pdf_buttons, pattern="^(pdf_|quick_|full_|ask_pdf|download_|show_chapters|chapter_|prev_part_|next_part_|explain_|quiz_this)"))
     app.add_handler(CallbackQueryHandler(handle_pomodoro_buttons, pattern="^pomodoro_|^start_pomodoro"))
     app.add_handler(CallbackQueryHandler(handle_plan_buttons, pattern="^(show_weekly_plan|show_today_plan|regenerate_plan)$"))
     app.add_handler(CallbackQueryHandler(button_handler))
