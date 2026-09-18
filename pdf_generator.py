@@ -11,6 +11,8 @@ from reportlab.lib.enums import TA_RIGHT, TA_CENTER
 import arabic_reshaper
 from bidi.algorithm import get_display
 
+from config import DEVELOPER_NAME, DEVELOPER_USERNAME, BOT_NAME, BOT_USERNAME
+
 # ===== الخط العربي =====
 FONT_PATH = os.path.join("fonts", "Amiri-Regular.ttf")
 FONT_NAME = "Amiri"
@@ -109,7 +111,7 @@ def add_header_footer(canvas, doc):
 
     canvas.setFillColor(WHITE)
     canvas.setFont(FONT_NAME, 16)
-    canvas.drawCentredString(A4[0] / 2, A4[1] - 1.2 * cm, ar("ذاكر - مساعدك الدراسي"))
+    canvas.drawCentredString(A4[0] / 2, A4[1] - 1.2 * cm, ar(f"{BOT_NAME} - مساعدك الدراسي"))
 
     # Footer
     canvas.setFillColor(LIGHT)
@@ -120,7 +122,7 @@ def add_header_footer(canvas, doc):
     canvas.drawCentredString(
         A4[0] / 2,
         0.9 * cm,
-        ar("Mahmoud Nasef  •  @salafimahmoudnasef  •  @trans_service_egypt_bot"),
+        ar(f"{DEVELOPER_NAME}  •  {DEVELOPER_USERNAME}  •  {BOT_USERNAME}"),
     )
 
     canvas.restoreState()
@@ -189,7 +191,7 @@ def create_pdf_report(analysis_text, user_name, output_path="report.pdf"):
         )
     )
     story.append(Spacer(1, 0.5 * cm))
-    story.append(Paragraph(ar("تم إنشاء هذا التقرير بواسطة ذاكر"), styles["footer"]))
+    story.append(Paragraph(ar(f"تم إنشاء هذا التقرير بواسطة {BOT_NAME}"), styles["footer"]))
 
     doc.build(story, onFirstPage=add_header_footer, onLaterPages=add_header_footer)
 

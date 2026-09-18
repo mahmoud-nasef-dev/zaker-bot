@@ -1,8 +1,17 @@
 import os
+import sys
+import io
+
+# Fix Windows encoding issue
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 import json
 import re
+import time
 from groq import Groq
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 from pypdf import PdfReader
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,7 +23,8 @@ from telegram.request import HTTPXRequest
 
 from config import (
     WELCOME_MESSAGE, ABOUT_MESSAGE, BOT_NAME, BOT_VERSION,
-    DEVELOPER_NAME, DEVELOPER_USERNAME, ADMIN_IDS, BOT_USERNAME
+    DEVELOPER_NAME, DEVELOPER_USERNAME, ADMIN_IDS, BOT_USERNAME,
+    GROQ_MODEL, GEMINI_MODEL, AI_MAX_TOKENS, AI_TEMPERATURE
 )
 from database import (
     init_db, get_or_create_user, increment_usage,
@@ -56,18 +66,22 @@ load_dotenv()
 
 # Groq (الموديل الأساسي - سريع جداً)
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-GROQ_MODEL = "openai/gpt-oss-20b"
-# Gemini (احتياطي)
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-gemini_model = genai.GenerativeModel("gemini-3.6-flash")
+
+# Gemini (احتياطي - للـ PDF المصور)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+    print(f"✅ Gemini configured with {GEMINI_MODEL}")
+else:
+    gemini_client = None
+    print("⚠️ تحذير: GEMINI_API_KEY مش موجود!")
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 
 # ===== دالة AI موحدة (Groq + Gemini) =====
-def ai_generate(prompt, use_groq=True, max_tokens=4000):
+def ai_generate(prompt, use_groq=True, max_tokens=AI_MAX_TOKENS):
     """بتوليد نص بـ Groq أو Gemini"""
-    # لو البرومبت كبير جداً، نقطعه
     if len(prompt) > 25000:
         prompt = prompt[:25000] + "..."
 
@@ -79,7 +93,7 @@ def ai_generate(prompt, use_groq=True, max_tokens=4000):
                     {"role": "system", "content": "إنت مساعد دراسي مصري. كل ردودك بالعربي."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.7,
+                temperature=AI_TEMPERATURE,
                 max_tokens=max_tokens,
             )
             return response.choices[0].message.content
@@ -87,9 +101,18 @@ def ai_generate(prompt, use_groq=True, max_tokens=4000):
             print(f"⚠️ Groq فشل: {e}")
             print("⏳ بنجرب Gemini...")
 
-    # Gemini (fallback)
+    if gemini_client is None:
+        return "❌ Gemini مش متاح. راجع الإعدادات."
+
     try:
-        response = gemini_model.generate_content(prompt)
+        response = gemini_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                max_output_tokens=max_tokens,
+                temperature=AI_TEMPERATURE,
+            )
+        )
         return response.text
     except Exception as e:
         print(f"⚠️ Gemini فشل كمان: {e}")
@@ -171,7 +194,6 @@ def summarize_text(text):
 
 def process_pdf(file_path):
     """بيحاول يقرا PDF بـ pypdf الأول، لو فشل → Gemini"""
-    # المحاولة الأولى: pypdf
     try:
         reader = PdfReader(file_path)
         text = ""
@@ -179,7 +201,6 @@ def process_pdf(file_path):
             page_text = page.extract_text() or ""
             text += page_text + "\n"
 
-        # لو النص كافي → نرجعه
         if len(text.strip()) > 200:
             print(f"✅ pypdf: {len(text)} حرف")
             return text
@@ -188,34 +209,39 @@ def process_pdf(file_path):
     except Exception as e:
         print(f"⚠️ pypdf فشل: {e} — بنجرب Gemini")
 
-    # المحاولة التانية: Gemini File Upload
-    try:
-        uploaded_file = genai.upload_file(file_path)
+    if gemini_client is None:
+        print("❌ Gemini مش متاح (المفتاح مش موجود)")
+        return ""
 
-        # نستنى المعالجة
-        import time
-        max_wait = 30
+    try:
+        print("⏳ جاري رفع الملف على Gemini...")
+        uploaded_file = gemini_client.files.upload(file=file_path)
+
+        max_wait = 60
         waited = 0
         while uploaded_file.state.name == "PROCESSING" and waited < max_wait:
             time.sleep(2)
             waited += 2
-            uploaded_file = genai.get_file(uploaded_file.name)
+            uploaded_file = gemini_client.files.get(name=uploaded_file.name)
 
         if uploaded_file.state.name == "FAILED":
             print("❌ Gemini فشل في معالجة الملف")
             return ""
 
-        response = gemini_model.generate_content([
-            uploaded_file,
-            "استخرج كل النص اللي في الملف ده. رجّع النص زي ما هو (إنجليزي يبقى إنجليزي، عربي يبقى عربي). متضيفش أي كلام من عندك."
-        ])
+        print("⏳ جاري استخراج النص من Gemini...")
+        response = gemini_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[
+                uploaded_file,
+                "استخرج كل النص اللي في الملف ده. رجّع النص زي ما هو (إنجليزي يبقى إنجليزي، عربي يبقى عربي). متضيفش أي كلام من عندك."
+            ]
+        )
 
         text = response.text or ""
         print(f"✅ Gemini: {len(text)} حرف")
 
-        # امسح الملف من Gemini
         try:
-            genai.delete_file(uploaded_file.name)
+            gemini_client.files.delete(name=uploaded_file.name)
         except:
             pass
 
@@ -360,7 +386,6 @@ def generate_chapters(pdf_text, user_college=None, user_subjects=None, learning_
     if user_subjects:
         context += f"مواده: {', '.join(user_subjects)}.\n"
 
-    # لو النص صغير
     if len(pdf_text) <= 20000:
         prompt = f"""إنت "ذاكر" — مدرب دراسي مصري.
 
@@ -399,7 +424,6 @@ def generate_chapters(pdf_text, user_college=None, user_subjects=None, learning_
             text = response.strip()
             text = text.replace("```json", "").replace("```", "").strip()
 
-            # ابحث عن JSON في النص
             start = text.find("{")
             end = text.rfind("}") + 1
             if start >= 0 and end > start:
@@ -410,12 +434,11 @@ def generate_chapters(pdf_text, user_college=None, user_subjects=None, learning_
         except Exception as e:
             print(f"⚠️ خطأ في قراءة JSON: {e}")
 
-        # لو النص كبير — نقسم
     chunks = chunk_pdf_text(pdf_text, 6000)
     print(f"📊 الملف كبير — بنقسمه لـ {len(chunks)} أجزاء")
 
     all_chapters = []
-    for i, chunk in enumerate(chunks[:4]):  # أول 4 أجزاء بس (24,000 حرف)
+    for i, chunk in enumerate(chunks[:4]):
         prompt = f"""إنت "ذاكر".
 
 {context}
@@ -452,7 +475,6 @@ def generate_chapters(pdf_text, user_college=None, user_subjects=None, learning_
             data = json.loads(text)
             sub_chapters = data.get("chapters", [])
 
-            # نضيف رقم الجزء الرئيسي للاسم
             for ch in sub_chapters:
                 ch["title"] = f"[جزء {i+1}] {ch.get('title', '')}"
                 all_chapters.append(ch)
@@ -460,7 +482,6 @@ def generate_chapters(pdf_text, user_college=None, user_subjects=None, learning_
             print(f"⚠️ خطأ في جزء {i+1}: {e}")
             continue
 
-    # لو مفيش فصول
     if not all_chapters:
         all_chapters = [
             {"title": "الفصل 1", "parts": [{"title": "الجزء 1"}, {"title": "الجزء 2"}]},
@@ -989,7 +1010,6 @@ async def handle_pdf_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
     data = query.data
     user = query.from_user
 
-    # Quick Actions
     if data == "quick_summary":
         await query.answer()
         await handle_quick_summary(query, context, user)
@@ -1020,7 +1040,6 @@ async def handle_pdf_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.answer("📥 قريب إن شاء الله 🚧")
         return
 
-    # Chapters
     if data == "show_chapters":
         await query.answer()
         await show_chapters_list(query, context, user)
@@ -1051,14 +1070,12 @@ async def handle_pdf_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.answer("📥 قريب إن شاء الله 🚧")
         return
 
-    # أزرار pdf_ القديمة
     if data.startswith("pdf_"):
         await query.answer()
         analysis_type = data.replace("pdf_", "")
         await handle_pdf_analysis(query, context, user, analysis_type)
         return
 
-    # لو مش بتاع PDF
     await button_handler(update, context)
 
 
@@ -1857,7 +1874,16 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pdf_text = process_pdf(pdf_path)
 
         if not pdf_text.strip():
-            await waiting.edit_text("❌ الملف فاضي أو مش مقروء.")
+            await waiting.edit_text(
+                "❌ الملف فاضي أو مش مقروء.\n\n"
+                "💡 *الأسباب المحتملة:*\n"
+                "• الملف عبارة عن صور (Scanned) ومحتاج OCR\n"
+                "• الملف محمي بكلمة سر\n"
+                "• مشكلة مؤقتة في الاتصال بالـ AI\n\n"
+                "🔁 جرب ترفع الملف تاني، ولو استمرت المشكلة كلم المطور."
+            )
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
             return
 
         context.user_data["pdf_text"] = pdf_text
@@ -1893,7 +1919,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     get_or_create_user(user.id, user.username, user.first_name)
 
-    # ===== سؤال عن PDF =====
     if context.user_data.get("awaiting_pdf_question"):
         context.user_data["awaiting_pdf_question"] = False
 
@@ -1938,7 +1963,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await waiting.edit_text(f"❌ حصل خطأ: {str(e)}")
         return
 
-    # ===== إدخال المواد =====
     if context.user_data.get("awaiting_subjects"):
         lines = [line.strip() for line in text.split("\n") if line.strip()]
 
@@ -1966,7 +1990,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["awaiting_college"] = True
         return
 
-    # ===== إدخال الكلية =====
     if context.user_data.get("awaiting_college"):
         college = text.strip()
         context.user_data["awaiting_college"] = False
@@ -1979,7 +2002,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # ===== اشرحلي =====
     if context.user_data.get("awaiting_explanation"):
         explanation_type = context.user_data.pop("awaiting_explanation")
 
@@ -2001,7 +2023,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await waiting.edit_text(f"❌ حصل خطأ: {str(e)}")
         return
 
-    # ===== المعالجة العادية =====
     allowed, remaining = check_limit(user.id)
     if not allowed:
         await update.message.reply_text(f"⚠️ وصلت للحد اليومي!\n\n💎 تواصل مع {DEVELOPER_USERNAME}")
@@ -2171,6 +2192,7 @@ def main():
     print(f"✅ {BOT_NAME} v{BOT_VERSION} شغال!")
     print(f"👨‍💻 المطور: {DEVELOPER_NAME}")
     print(f"🤖 Groq Model: {GROQ_MODEL}")
+    print(f"🤖 Gemini Model: {GEMINI_MODEL}")
     print("اضغط Ctrl+C للإيقاف.")
     app.run_polling()
 

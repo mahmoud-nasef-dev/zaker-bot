@@ -5,3 +5,5 @@ users.db
 temp_*.pdf
 report_*.pdf
 test_*.py
+bot_output.log
+*.log

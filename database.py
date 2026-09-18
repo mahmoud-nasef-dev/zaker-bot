@@ -11,19 +11,50 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 if DATABASE_URL:
     import psycopg2
+    from psycopg2 import pool
     USE_POSTGRES = True
-    print("✅ باستخدام PostgreSQL")
+    print("✅ باستخدام PostgreSQL (مع Connection Pooling)")
+
+    # ===== Connection Pool =====
+    try:
+        _connection_pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=2,
+            maxconn=20,
+            dsn=DATABASE_URL
+        )
+        print("✅ Connection Pool جاهز (min=2, max=20)")
+    except Exception as e:
+        print(f"❌ فشل إنشاء Connection Pool: {e}")
+        _connection_pool = None
 else:
     USE_POSTGRES = False
+    _connection_pool = None
     print("✅ باستخدام SQLite")
 
 
 # ===== دوال مساعدة =====
 def get_connection():
+    """بترجع اتصال من الـ Pool (أو SQLite)"""
     if USE_POSTGRES:
-        return psycopg2.connect(DATABASE_URL)
+        if _connection_pool is None:
+            raise Exception("Connection Pool مش متاح")
+        return _connection_pool.getconn()
     else:
-        return sqlite3.connect(DATABASE_FILE)
+        return sqlite3.connect(DATABASE_FILE, timeout=30)
+
+
+def release_connection(conn):
+    """بترجع الاتصال للـ Pool"""
+    if USE_POSTGRES and _connection_pool is not None:
+        try:
+            _connection_pool.putconn(conn)
+        except Exception as e:
+            print(f"⚠️ خطأ في إرجاع الاتصال: {e}")
+    else:
+        try:
+            conn.close()
+        except:
+            pass
 
 
 def placeholder():
@@ -119,13 +150,13 @@ def init_db():
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN college TEXT DEFAULT NULL")
         conn.commit()
-    except:
+    except Exception:
         conn.rollback()
 
     try:
         cursor.execute("ALTER TABLE users ADD COLUMN onboarding_done INTEGER DEFAULT 0")
         conn.commit()
-    except:
+    except Exception:
         conn.rollback()
 
     # ===== جدول user_subjects =====
@@ -228,7 +259,7 @@ def init_db():
             )
         """)
 
-    # ===== جدول pdf_analyses (جديد - v1.1) =====
+    # ===== جدول pdf_analyses =====
     if USE_POSTGRES:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS pdf_analyses (
@@ -258,7 +289,7 @@ def init_db():
 
     conn.commit()
     cursor.close()
-    conn.close()
+    release_connection(conn)
 
 
 # ===== دوال المستخدمين =====
@@ -269,64 +300,72 @@ def get_or_create_user(user_id, username, first_name, invited_by=None):
     today = str(date.today())
     ph = placeholder()
 
-    cursor.execute(
-        f"SELECT * FROM users WHERE user_id = {ph}",
-        (user_id,)
-    )
-    user = cursor.fetchone()
-
-    if user is None:
-        plan = "admin" if user_id in ADMIN_IDS else "free"
+    try:
         cursor.execute(
-            f"""INSERT INTO users 
-                (user_id, username, first_name, joined_date, last_used, plan, invited_by)
-                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
-            (user_id, username, first_name, today, today, plan, invited_by)
+            f"SELECT * FROM users WHERE user_id = {ph}",
+            (user_id,)
         )
-        conn.commit()
+        user = cursor.fetchone()
 
-        if invited_by:
+        if user is None:
+            plan = "admin" if user_id in ADMIN_IDS else "free"
             cursor.execute(
-                f"UPDATE users SET points = points + {ph} WHERE user_id = {ph}",
-                (POINTS_REWARDS["invite_friend"], invited_by)
-            )
-            cursor.execute(
-                f"UPDATE users SET invited_count = invited_count + 1 WHERE user_id = {ph}",
-                (invited_by,)
+                f"""INSERT INTO users 
+                    (user_id, username, first_name, joined_date, last_used, plan, invited_by)
+                    VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
+                (user_id, username, first_name, today, today, plan, invited_by)
             )
             conn.commit()
 
+            if invited_by:
+                cursor.execute(
+                    f"UPDATE users SET points = points + {ph} WHERE user_id = {ph}",
+                    (POINTS_REWARDS["invite_friend"], invited_by)
+                )
+                cursor.execute(
+                    f"UPDATE users SET invited_count = invited_count + 1 WHERE user_id = {ph}",
+                    (invited_by,)
+                )
+                conn.commit()
+
+            cursor.close()
+            release_connection(conn)
+            return {
+                "user_id": user_id, "plan": plan, "daily_requests": 0,
+                "total_requests": 0, "points": 0, "level": 1,
+                "daily_streak": 0, "is_new": True, "onboarding_done": False
+            }
+
+        last_used = user[4]
+        daily_requests = user[6]
+
+        if last_used != today:
+            cursor.execute(
+                f"UPDATE users SET daily_requests = 0, last_used = {ph} WHERE user_id = {ph}",
+                (today, user_id)
+            )
+            daily_requests = 0
+            conn.commit()
+
+        onboarding = bool(user[15]) if len(user) > 15 else False
+
         cursor.close()
-        conn.close()
+        release_connection(conn)
+
         return {
-            "user_id": user_id, "plan": plan, "daily_requests": 0,
-            "total_requests": 0, "points": 0, "level": 1,
-            "daily_streak": 0, "is_new": True, "onboarding_done": False
+            "user_id": user[0], "plan": user[7], "daily_requests": daily_requests,
+            "total_requests": user[5], "points": user[8], "level": user[9],
+            "daily_streak": user[10], "is_new": False, "onboarding_done": onboarding
         }
-
-    last_used = user[4]
-    daily_requests = user[6]
-
-    if last_used != today:
-        cursor.execute(
-            f"UPDATE users SET daily_requests = 0, last_used = {ph} WHERE user_id = {ph}",
-            (today, user_id)
-        )
-        daily_requests = 0
-
-    conn.commit()
-    cursor.close()
-    conn.close()
-
-    onboarding = False
-    if len(user) > 15:
-        onboarding = bool(user[15])
-
-    return {
-        "user_id": user[0], "plan": user[7], "daily_requests": daily_requests,
-        "total_requests": user[5], "points": user[8], "level": user[9],
-        "daily_streak": user[10], "is_new": False, "onboarding_done": onboarding
-    }
+    except Exception as e:
+        print(f"❌ خطأ في get_or_create_user: {e}")
+        try:
+            conn.rollback()
+            cursor.close()
+        except:
+            pass
+        release_connection(conn)
+        raise
 
 
 def complete_onboarding(user_id):
@@ -334,13 +373,18 @@ def complete_onboarding(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"UPDATE users SET onboarding_done = 1 WHERE user_id = {ph}",
-        (user_id,)
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute(
+            f"UPDATE users SET onboarding_done = 1 WHERE user_id = {ph}",
+            (user_id,)
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"❌ خطأ في complete_onboarding: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def is_onboarding_done(user_id):
@@ -348,17 +392,19 @@ def is_onboarding_done(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"SELECT onboarding_done FROM users WHERE user_id = {ph}",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-
-    if row:
-        return bool(row[0])
-    return False
+    try:
+        cursor.execute(
+            f"SELECT onboarding_done FROM users WHERE user_id = {ph}",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        return bool(row[0]) if row else False
+    except Exception as e:
+        print(f"❌ خطأ في is_onboarding_done: {e}")
+        return False
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def set_user_college(user_id, college):
@@ -366,13 +412,18 @@ def set_user_college(user_id, college):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"UPDATE users SET college = {ph} WHERE user_id = {ph}",
-        (college, user_id)
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute(
+            f"UPDATE users SET college = {ph} WHERE user_id = {ph}",
+            (college, user_id)
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"❌ خطأ في set_user_college: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def get_user_college(user_id):
@@ -386,14 +437,13 @@ def get_user_college(user_id):
             (user_id,)
         )
         row = cursor.fetchone()
-        cursor.close()
-        conn.close()
         return row[0] if row and row[0] else None
     except Exception as e:
-        cursor.close()
-        conn.close()
         print(f"⚠️ خطأ في get_user_college: {e}")
         return None
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 # ===== دوال النقاط =====
@@ -402,26 +452,31 @@ def add_points(user_id, amount):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"UPDATE users SET points = points + {ph} WHERE user_id = {ph}",
-        (amount, user_id)
-    )
-
-    cursor.execute(
-        f"SELECT points FROM users WHERE user_id = {ph}",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    if row:
-        level_info = get_level_info(row[0])
+    try:
         cursor.execute(
-            f"UPDATE users SET level = {ph} WHERE user_id = {ph}",
-            (level_info["level"], user_id)
+            f"UPDATE users SET points = points + {ph} WHERE user_id = {ph}",
+            (amount, user_id)
         )
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+        cursor.execute(
+            f"SELECT points FROM users WHERE user_id = {ph}",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        if row:
+            level_info = get_level_info(row[0])
+            cursor.execute(
+                f"UPDATE users SET level = {ph} WHERE user_id = {ph}",
+                (level_info["level"], user_id)
+            )
+
+        conn.commit()
+    except Exception as e:
+        print(f"❌ خطأ في add_points: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def get_user_points(user_id):
@@ -429,17 +484,19 @@ def get_user_points(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"SELECT points, level FROM users WHERE user_id = {ph}",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-
-    if row:
-        return row[0], row[1]
-    return 0, 1
+    try:
+        cursor.execute(
+            f"SELECT points, level FROM users WHERE user_id = {ph}",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        return (row[0], row[1]) if row else (0, 1)
+    except Exception as e:
+        print(f"❌ خطأ في get_user_points: {e}")
+        return 0, 1
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def increment_usage(user_id, points=0):
@@ -447,30 +504,35 @@ def increment_usage(user_id, points=0):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"""UPDATE users
-            SET total_requests = total_requests + 1,
-                daily_requests = daily_requests + 1,
-                points = points + {ph}
-            WHERE user_id = {ph}""",
-        (points, user_id)
-    )
-
-    cursor.execute(
-        f"SELECT points FROM users WHERE user_id = {ph}",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    if row:
-        level_info = get_level_info(row[0])
+    try:
         cursor.execute(
-            f"UPDATE users SET level = {ph} WHERE user_id = {ph}",
-            (level_info["level"], user_id)
+            f"""UPDATE users
+                SET total_requests = total_requests + 1,
+                    daily_requests = daily_requests + 1,
+                    points = points + {ph}
+                WHERE user_id = {ph}""",
+            (points, user_id)
         )
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+        cursor.execute(
+            f"SELECT points FROM users WHERE user_id = {ph}",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        if row:
+            level_info = get_level_info(row[0])
+            cursor.execute(
+                f"UPDATE users SET level = {ph} WHERE user_id = {ph}",
+                (level_info["level"], user_id)
+            )
+
+        conn.commit()
+    except Exception as e:
+        print(f"❌ خطأ في increment_usage: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def check_limit(user_id):
@@ -478,35 +540,40 @@ def check_limit(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"SELECT plan, daily_requests, points FROM users WHERE user_id = {ph}",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute(
+            f"SELECT plan, daily_requests, points FROM users WHERE user_id = {ph}",
+            (user_id,)
+        )
+        row = cursor.fetchone()
 
-    if row is None:
+        if row is None:
+            return True, 0
+
+        plan, daily_requests, points = row
+
+        limits = {
+            "free": FREE_DAILY_LIMIT,
+            "premium": PREMIUM_DAILY_LIMIT,
+            "admin": ADMIN_DAILY_LIMIT,
+        }
+
+        limit = limits.get(plan, FREE_DAILY_LIMIT)
+
+        level_info = get_level_info(points)
+        bonus = (level_info["level"] - 1) * 2
+        limit += bonus
+
+        if daily_requests >= limit:
+            return False, 0
+
+        return True, limit - daily_requests
+    except Exception as e:
+        print(f"❌ خطأ في check_limit: {e}")
         return True, 0
-
-    plan, daily_requests, points = row
-
-    limits = {
-        "free": FREE_DAILY_LIMIT,
-        "premium": PREMIUM_DAILY_LIMIT,
-        "admin": ADMIN_DAILY_LIMIT,
-    }
-
-    limit = limits.get(plan, FREE_DAILY_LIMIT)
-
-    level_info = get_level_info(points)
-    bonus = (level_info["level"] - 1) * 2
-    limit += bonus
-
-    if daily_requests >= limit:
-        return False, 0
-
-    return True, limit - daily_requests
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def get_user_plan(user_id):
@@ -514,14 +581,19 @@ def get_user_plan(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"SELECT plan FROM users WHERE user_id = {ph}",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    return row[0] if row else "free"
+    try:
+        cursor.execute(
+            f"SELECT plan FROM users WHERE user_id = {ph}",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        return row[0] if row else "free"
+    except Exception as e:
+        print(f"❌ خطأ في get_user_plan: {e}")
+        return "free"
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def set_user_plan(user_id, plan):
@@ -529,13 +601,18 @@ def set_user_plan(user_id, plan):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"UPDATE users SET plan = {ph} WHERE user_id = {ph}",
-        (plan, user_id)
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute(
+            f"UPDATE users SET plan = {ph} WHERE user_id = {ph}",
+            (plan, user_id)
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"❌ خطأ في set_user_plan: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 # ===== الهدية اليومية =====
@@ -544,83 +621,85 @@ def claim_daily_gift(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"SELECT last_daily_claim, daily_streak FROM users WHERE user_id = {ph}",
-        (user_id,)
-    )
-    row = cursor.fetchone()
+    try:
+        cursor.execute(
+            f"SELECT last_daily_claim, daily_streak FROM users WHERE user_id = {ph}",
+            (user_id,)
+        )
+        row = cursor.fetchone()
 
-    if not row:
-        cursor.close()
-        conn.close()
-        return {"success": False, "message": "المستخدم مش موجود"}
+        if not row:
+            return {"success": False, "message": "المستخدم مش موجود"}
 
-    last_claim, streak = row
-    now = datetime.now()
+        last_claim, streak = row
+        now = datetime.now()
 
-    if last_claim:
-        last_claim_date = datetime.strptime(last_claim, "%Y-%m-%d %H:%M:%S")
-        diff = now - last_claim_date
+        if last_claim:
+            last_claim_date = datetime.strptime(last_claim, "%Y-%m-%d %H:%M:%S")
+            diff = now - last_claim_date
 
-        if diff < timedelta(hours=24):
-            remaining = timedelta(hours=24) - diff
-            hours = remaining.seconds // 3600
-            minutes = (remaining.seconds % 3600) // 60
-            cursor.close()
-            conn.close()
-            return {
-                "success": False,
-                "message": f"⏳ استنى {hours} ساعة و {minutes} دقيقة",
-                "remaining_hours": hours,
-            }
+            if diff < timedelta(hours=24):
+                remaining = timedelta(hours=24) - diff
+                hours = remaining.seconds // 3600
+                minutes = (remaining.seconds % 3600) // 60
+                return {
+                    "success": False,
+                    "message": f"⏳ استنى {hours} ساعة و {minutes} دقيقة",
+                    "remaining_hours": hours,
+                }
 
-        if diff > timedelta(hours=48):
-            streak = 0
+            if diff > timedelta(hours=48):
+                streak = 0
+            else:
+                streak += 1
         else:
-            streak += 1
-    else:
-        streak = 1
+            streak = 1
 
-    points = POINTS_REWARDS["daily_gift"]
-    bonus = 0
+        points = POINTS_REWARDS["daily_gift"]
+        bonus = 0
 
-    if streak == 7:
-        bonus = POINTS_REWARDS["streak_bonus_7"]
-    elif streak == 30:
-        bonus = POINTS_REWARDS["streak_bonus_30"]
+        if streak == 7:
+            bonus = POINTS_REWARDS["streak_bonus_7"]
+        elif streak == 30:
+            bonus = POINTS_REWARDS["streak_bonus_30"]
 
-    total = points + bonus
+        total = points + bonus
 
-    cursor.execute(
-        f"UPDATE users SET last_daily_claim = {ph}, daily_streak = {ph}, points = points + {ph} WHERE user_id = {ph}",
-        (now.strftime("%Y-%m-%d %H:%M:%S"), streak, total, user_id)
-    )
+        cursor.execute(
+            f"UPDATE users SET last_daily_claim = {ph}, daily_streak = {ph}, points = points + {ph} WHERE user_id = {ph}",
+            (now.strftime("%Y-%m-%d %H:%M:%S"), streak, total, user_id)
+        )
 
-    cursor.execute(
-        f"SELECT points FROM users WHERE user_id = {ph}",
-        (user_id,)
-    )
-    new_points = cursor.fetchone()[0]
-    level_info = get_level_info(new_points)
+        cursor.execute(
+            f"SELECT points FROM users WHERE user_id = {ph}",
+            (user_id,)
+        )
+        new_points = cursor.fetchone()[0]
+        level_info = get_level_info(new_points)
 
-    cursor.execute(
-        f"UPDATE users SET level = {ph} WHERE user_id = {ph}",
-        (level_info["level"], user_id)
-    )
+        cursor.execute(
+            f"UPDATE users SET level = {ph} WHERE user_id = {ph}",
+            (level_info["level"], user_id)
+        )
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+        conn.commit()
 
-    return {
-        "success": True,
-        "points": points,
-        "bonus": bonus,
-        "total": total,
-        "streak": streak,
-        "new_points": new_points,
-        "level": level_info,
-    }
+        return {
+            "success": True,
+            "points": points,
+            "bonus": bonus,
+            "total": total,
+            "streak": streak,
+            "new_points": new_points,
+            "level": level_info,
+        }
+    except Exception as e:
+        print(f"❌ خطأ في claim_daily_gift: {e}")
+        conn.rollback()
+        return {"success": False, "message": "حصل خطأ، حاول تاني"}
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 # ===== المتصدرين =====
@@ -629,17 +708,21 @@ def get_leaderboard(limit=10):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"""SELECT user_id, first_name, username, points, level
-            FROM users
-            ORDER BY points DESC
-            LIMIT {ph}""",
-        (limit,)
-    )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
+    try:
+        cursor.execute(
+            f"""SELECT user_id, first_name, username, points, level
+                FROM users
+                ORDER BY points DESC
+                LIMIT {ph}""",
+            (limit,)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        print(f"❌ خطأ في get_leaderboard: {e}")
+        return []
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 # ===== الإحصائيات =====
@@ -648,46 +731,54 @@ def get_detailed_stats():
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute("SELECT COUNT(*) FROM users")
-    total_users = cursor.fetchone()[0]
+    try:
+        cursor.execute("SELECT COUNT(*) FROM users")
+        total_users = cursor.fetchone()[0]
 
-    today = str(date.today())
-    cursor.execute(
-        f"SELECT COUNT(*) FROM users WHERE last_used = {ph}",
-        (today,)
-    )
-    active_today = cursor.fetchone()[0]
+        today = str(date.today())
+        cursor.execute(
+            f"SELECT COUNT(*) FROM users WHERE last_used = {ph}",
+            (today,)
+        )
+        active_today = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM users WHERE plan = 'premium'")
-    premium_users = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM users WHERE plan = 'premium'")
+        premium_users = cursor.fetchone()[0]
 
-    cursor.execute("SELECT COUNT(*) FROM users WHERE plan = 'admin'")
-    admin_users = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM users WHERE plan = 'admin'")
+        admin_users = cursor.fetchone()[0]
 
-    cursor.execute("SELECT SUM(total_requests) FROM users")
-    total_requests = cursor.fetchone()[0] or 0
+        cursor.execute("SELECT SUM(total_requests) FROM users")
+        total_requests = cursor.fetchone()[0] or 0
 
-    cursor.execute("SELECT SUM(points) FROM users")
-    total_points = cursor.fetchone()[0] or 0
+        cursor.execute("SELECT SUM(points) FROM users")
+        total_points = cursor.fetchone()[0] or 0
 
-    cursor.execute("""
-        SELECT first_name, points FROM users
-        ORDER BY points DESC LIMIT 5
-    """)
-    top_users = cursor.fetchall()
+        cursor.execute("""
+            SELECT first_name, points FROM users
+            ORDER BY points DESC LIMIT 5
+        """)
+        top_users = cursor.fetchall()
 
-    cursor.close()
-    conn.close()
-
-    return {
-        "total_users": total_users,
-        "active_today": active_today,
-        "premium_users": premium_users,
-        "admin_users": admin_users,
-        "total_requests": total_requests,
-        "total_points": total_points,
-        "top_users": top_users,
-    }
+        return {
+            "total_users": total_users,
+            "active_today": active_today,
+            "premium_users": premium_users,
+            "admin_users": admin_users,
+            "total_requests": total_requests,
+            "total_points": total_points,
+            "top_users": top_users,
+        }
+    except Exception as e:
+        print(f"❌ خطأ في get_detailed_stats: {e}")
+        return {
+            "total_users": 0, "active_today": 0, "premium_users": 0,
+            "admin_users": 0, "total_requests": 0, "total_points": 0,
+            "top_users": [],
+        }
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def get_all_users(limit=20):
@@ -695,28 +786,37 @@ def get_all_users(limit=20):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"""SELECT user_id, first_name, username, points, level, plan, last_used
-            FROM users
-            ORDER BY last_used DESC
-            LIMIT {ph}""",
-        (limit,)
-    )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return rows
+    try:
+        cursor.execute(
+            f"""SELECT user_id, first_name, username, points, level, plan, last_used
+                FROM users
+                ORDER BY last_used DESC
+                LIMIT {ph}""",
+            (limit,)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        print(f"❌ خطأ في get_all_users: {e}")
+        return []
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def get_all_user_ids():
     conn = get_connection()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT user_id FROM users WHERE plan != 'banned'")
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return [row[0] for row in rows]
+    try:
+        cursor.execute("SELECT user_id FROM users WHERE plan != 'banned'")
+        rows = cursor.fetchall()
+        return [row[0] for row in rows]
+    except Exception as e:
+        print(f"❌ خطأ في get_all_user_ids: {e}")
+        return []
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 # ===== دوال المواد =====
@@ -725,14 +825,19 @@ def get_user_subjects(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"SELECT subject_name FROM user_subjects WHERE user_id = {ph} AND is_active = 1 ORDER BY id",
-        (user_id,)
-    )
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    return [row[0] for row in rows]
+    try:
+        cursor.execute(
+            f"SELECT subject_name FROM user_subjects WHERE user_id = {ph} AND is_active = 1 ORDER BY id",
+            (user_id,)
+        )
+        rows = cursor.fetchall()
+        return [row[0] for row in rows]
+    except Exception as e:
+        print(f"❌ خطأ في get_user_subjects: {e}")
+        return []
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def add_subject(user_id, subject_name):
@@ -740,23 +845,27 @@ def add_subject(user_id, subject_name):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"SELECT id FROM user_subjects WHERE user_id = {ph} AND subject_name = {ph} AND is_active = 1",
-        (user_id, subject_name)
-    )
-    if cursor.fetchone():
-        cursor.close()
-        conn.close()
-        return False
+    try:
+        cursor.execute(
+            f"SELECT id FROM user_subjects WHERE user_id = {ph} AND subject_name = {ph} AND is_active = 1",
+            (user_id, subject_name)
+        )
+        if cursor.fetchone():
+            return False
 
-    cursor.execute(
-        f"INSERT INTO user_subjects (user_id, subject_name, added_date) VALUES ({ph}, {ph}, {ph})",
-        (user_id, subject_name, str(date.today()))
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
-    return True
+        cursor.execute(
+            f"INSERT INTO user_subjects (user_id, subject_name, added_date) VALUES ({ph}, {ph}, {ph})",
+            (user_id, subject_name, str(date.today()))
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"❌ خطأ في add_subject: {e}")
+        conn.rollback()
+        return False
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def delete_subject(user_id, subject_name):
@@ -764,13 +873,18 @@ def delete_subject(user_id, subject_name):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"UPDATE user_subjects SET is_active = 0 WHERE user_id = {ph} AND subject_name = {ph}",
-        (user_id, subject_name)
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute(
+            f"UPDATE user_subjects SET is_active = 0 WHERE user_id = {ph} AND subject_name = {ph}",
+            (user_id, subject_name)
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"❌ خطأ في delete_subject: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def clear_user_subjects(user_id):
@@ -778,13 +892,18 @@ def clear_user_subjects(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"UPDATE user_subjects SET is_active = 0 WHERE user_id = {ph}",
-        (user_id,)
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute(
+            f"UPDATE user_subjects SET is_active = 0 WHERE user_id = {ph}",
+            (user_id,)
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"❌ خطأ في clear_user_subjects: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def has_subjects(user_id):
@@ -792,14 +911,19 @@ def has_subjects(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"SELECT COUNT(*) FROM user_subjects WHERE user_id = {ph} AND is_active = 1",
-        (user_id,)
-    )
-    count = cursor.fetchone()[0]
-    cursor.close()
-    conn.close()
-    return count > 0
+    try:
+        cursor.execute(
+            f"SELECT COUNT(*) FROM user_subjects WHERE user_id = {ph} AND is_active = 1",
+            (user_id,)
+        )
+        count = cursor.fetchone()[0]
+        return count > 0
+    except Exception as e:
+        print(f"❌ خطأ في has_subjects: {e}")
+        return False
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 # ===== دوال التحليل الشخصي =====
@@ -808,23 +932,28 @@ def save_analysis(user_id, study_time, focus_duration, learning_style, hard_subj
     cursor = conn.cursor()
     ph = placeholder()
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    cursor.execute(
-        f"DELETE FROM user_analysis WHERE user_id = {ph}",
-        (user_id,)
-    )
+        cursor.execute(
+            f"DELETE FROM user_analysis WHERE user_id = {ph}",
+            (user_id,)
+        )
 
-    cursor.execute(
-        f"""INSERT INTO user_analysis 
-            (user_id, study_time, focus_duration, learning_style, hard_subject, goal, exam_timing, analysis_result, analysis_date)
-            VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
-        (user_id, study_time, focus_duration, learning_style, hard_subject, goal, exam_timing, analysis_result, now)
-    )
+        cursor.execute(
+            f"""INSERT INTO user_analysis 
+                (user_id, study_time, focus_duration, learning_style, hard_subject, goal, exam_timing, analysis_result, analysis_date)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
+            (user_id, study_time, focus_duration, learning_style, hard_subject, goal, exam_timing, analysis_result, now)
+        )
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+        conn.commit()
+    except Exception as e:
+        print(f"❌ خطأ في save_analysis: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def get_analysis(user_id):
@@ -832,28 +961,33 @@ def get_analysis(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"""SELECT study_time, focus_duration, learning_style, hard_subject, 
-                   goal, exam_timing, analysis_result, analysis_date
-            FROM user_analysis WHERE user_id = {ph}""",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute(
+            f"""SELECT study_time, focus_duration, learning_style, hard_subject, 
+                       goal, exam_timing, analysis_result, analysis_date
+                FROM user_analysis WHERE user_id = {ph}""",
+            (user_id,)
+        )
+        row = cursor.fetchone()
 
-    if row:
-        return {
-            "study_time": row[0],
-            "focus_duration": row[1],
-            "learning_style": row[2],
-            "hard_subject": row[3],
-            "goal": row[4],
-            "exam_timing": row[5],
-            "analysis_result": row[6],
-            "analysis_date": row[7],
-        }
-    return None
+        if row:
+            return {
+                "study_time": row[0],
+                "focus_duration": row[1],
+                "learning_style": row[2],
+                "hard_subject": row[3],
+                "goal": row[4],
+                "exam_timing": row[5],
+                "analysis_result": row[6],
+                "analysis_date": row[7],
+            }
+        return None
+    except Exception as e:
+        print(f"❌ خطأ في get_analysis: {e}")
+        return None
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def has_analysis(user_id):
@@ -861,14 +995,19 @@ def has_analysis(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"SELECT COUNT(*) FROM user_analysis WHERE user_id = {ph}",
-        (user_id,)
-    )
-    count = cursor.fetchone()[0]
-    cursor.close()
-    conn.close()
-    return count > 0
+    try:
+        cursor.execute(
+            f"SELECT COUNT(*) FROM user_analysis WHERE user_id = {ph}",
+            (user_id,)
+        )
+        count = cursor.fetchone()[0]
+        return count > 0
+    except Exception as e:
+        print(f"❌ خطأ في has_analysis: {e}")
+        return False
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 # ===== دوال خطة المذاكرة =====
@@ -877,23 +1016,28 @@ def save_study_plan(user_id, plan_text, plan_json=None):
     cursor = conn.cursor()
     ph = placeholder()
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    cursor.execute(
-        f"DELETE FROM study_plans WHERE user_id = {ph}",
-        (user_id,)
-    )
+        cursor.execute(
+            f"DELETE FROM study_plans WHERE user_id = {ph}",
+            (user_id,)
+        )
 
-    cursor.execute(
-        f"""INSERT INTO study_plans 
-            (user_id, plan_text, plan_json, created_date, updated_date)
-            VALUES ({ph}, {ph}, {ph}, {ph}, {ph})""",
-        (user_id, plan_text, plan_json, now, now)
-    )
+        cursor.execute(
+            f"""INSERT INTO study_plans 
+                (user_id, plan_text, plan_json, created_date, updated_date)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph})""",
+            (user_id, plan_text, plan_json, now, now)
+        )
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+        conn.commit()
+    except Exception as e:
+        print(f"❌ خطأ في save_study_plan: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def get_study_plan(user_id):
@@ -901,23 +1045,28 @@ def get_study_plan(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"""SELECT plan_text, plan_json, created_date, updated_date
-            FROM study_plans WHERE user_id = {ph}""",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute(
+            f"""SELECT plan_text, plan_json, created_date, updated_date
+                FROM study_plans WHERE user_id = {ph}""",
+            (user_id,)
+        )
+        row = cursor.fetchone()
 
-    if row:
-        return {
-            "plan_text": row[0],
-            "plan_json": row[1],
-            "created_date": row[2],
-            "updated_date": row[3],
-        }
-    return None
+        if row:
+            return {
+                "plan_text": row[0],
+                "plan_json": row[1],
+                "created_date": row[2],
+                "updated_date": row[3],
+            }
+        return None
+    except Exception as e:
+        print(f"❌ خطأ في get_study_plan: {e}")
+        return None
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def has_study_plan(user_id):
@@ -925,14 +1074,19 @@ def has_study_plan(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"SELECT COUNT(*) FROM study_plans WHERE user_id = {ph}",
-        (user_id,)
-    )
-    count = cursor.fetchone()[0]
-    cursor.close()
-    conn.close()
-    return count > 0
+    try:
+        cursor.execute(
+            f"SELECT COUNT(*) FROM study_plans WHERE user_id = {ph}",
+            (user_id,)
+        )
+        count = cursor.fetchone()[0]
+        return count > 0
+    except Exception as e:
+        print(f"❌ خطأ في has_study_plan: {e}")
+        return False
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 # ===== دوال Pomodoro =====
@@ -941,18 +1095,23 @@ def save_pomodoro_session(user_id, subject, duration):
     cursor = conn.cursor()
     ph = placeholder()
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    cursor.execute(
-        f"""INSERT INTO pomodoro_sessions 
-            (user_id, subject, duration, session_date)
-            VALUES ({ph}, {ph}, {ph}, {ph})""",
-        (user_id, subject, duration, now)
-    )
+        cursor.execute(
+            f"""INSERT INTO pomodoro_sessions 
+                (user_id, subject, duration, session_date)
+                VALUES ({ph}, {ph}, {ph}, {ph})""",
+            (user_id, subject, duration, now)
+        )
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+        conn.commit()
+    except Exception as e:
+        print(f"❌ خطأ في save_pomodoro_session: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def get_today_pomodoro_count(user_id):
@@ -960,17 +1119,22 @@ def get_today_pomodoro_count(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    today = str(date.today())
+    try:
+        today = str(date.today())
 
-    cursor.execute(
-        f"""SELECT COUNT(*) FROM pomodoro_sessions 
-            WHERE user_id = {ph} AND session_date LIKE {ph}""",
-        (user_id, f"{today}%")
-    )
-    count = cursor.fetchone()[0]
-    cursor.close()
-    conn.close()
-    return count
+        cursor.execute(
+            f"""SELECT COUNT(*) FROM pomodoro_sessions 
+                WHERE user_id = {ph} AND session_date LIKE {ph}""",
+            (user_id, f"{today}%")
+        )
+        count = cursor.fetchone()[0]
+        return count
+    except Exception as e:
+        print(f"❌ خطأ في get_today_pomodoro_count: {e}")
+        return 0
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def get_today_pomodoro_minutes(user_id):
@@ -978,17 +1142,22 @@ def get_today_pomodoro_minutes(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    today = str(date.today())
+    try:
+        today = str(date.today())
 
-    cursor.execute(
-        f"""SELECT COALESCE(SUM(duration), 0) FROM pomodoro_sessions 
-            WHERE user_id = {ph} AND session_date LIKE {ph}""",
-        (user_id, f"{today}%")
-    )
-    minutes = cursor.fetchone()[0]
-    cursor.close()
-    conn.close()
-    return minutes
+        cursor.execute(
+            f"""SELECT COALESCE(SUM(duration), 0) FROM pomodoro_sessions 
+                WHERE user_id = {ph} AND session_date LIKE {ph}""",
+            (user_id, f"{today}%")
+        )
+        minutes = cursor.fetchone()[0]
+        return minutes
+    except Exception as e:
+        print(f"❌ خطأ في get_today_pomodoro_minutes: {e}")
+        return 0
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def get_pomodoro_stats(user_id, days=7):
@@ -996,21 +1165,26 @@ def get_pomodoro_stats(user_id, days=7):
     cursor = conn.cursor()
     ph = placeholder()
 
-    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    try:
+        start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
-    cursor.execute(
-        f"""SELECT COUNT(*), COALESCE(SUM(duration), 0) FROM pomodoro_sessions 
-            WHERE user_id = {ph} AND session_date >= {ph}""",
-        (user_id, start_date)
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
+        cursor.execute(
+            f"""SELECT COUNT(*), COALESCE(SUM(duration), 0) FROM pomodoro_sessions 
+                WHERE user_id = {ph} AND session_date >= {ph}""",
+            (user_id, start_date)
+        )
+        row = cursor.fetchone()
 
-    return {
-        "sessions": row[0] if row else 0,
-        "minutes": row[1] if row else 0,
-    }
+        return {
+            "sessions": row[0] if row else 0,
+            "minutes": row[1] if row else 0,
+        }
+    except Exception as e:
+        print(f"❌ خطأ في get_pomodoro_stats: {e}")
+        return {"sessions": 0, "minutes": 0}
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 # ============================================
@@ -1023,25 +1197,30 @@ def save_pdf_analysis(user_id, file_name, page_count, pdf_text, quick_summary, c
     cursor = conn.cursor()
     ph = placeholder()
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # امسح التحليلات القديمة للمستخدم (نحتفظ بواحد بس)
-    cursor.execute(
-        f"DELETE FROM pdf_analyses WHERE user_id = {ph}",
-        (user_id,)
-    )
+        # امسح التحليلات القديمة للمستخدم (نحتفظ بواحد بس)
+        cursor.execute(
+            f"DELETE FROM pdf_analyses WHERE user_id = {ph}",
+            (user_id,)
+        )
 
-    # ضيف الجديد
-    cursor.execute(
-        f"""INSERT INTO pdf_analyses 
-            (user_id, file_name, page_count, pdf_text, quick_summary, chapters_json, created_date)
-            VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
-        (user_id, file_name, page_count, pdf_text, quick_summary, chapters_json, now)
-    )
+        # ضيف الجديد
+        cursor.execute(
+            f"""INSERT INTO pdf_analyses 
+                (user_id, file_name, page_count, pdf_text, quick_summary, chapters_json, created_date)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
+            (user_id, file_name, page_count, pdf_text, quick_summary, chapters_json, now)
+        )
 
-    conn.commit()
-    cursor.close()
-    conn.close()
+        conn.commit()
+    except Exception as e:
+        print(f"❌ خطأ في save_pdf_analysis: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def get_pdf_analysis(user_id):
@@ -1050,26 +1229,31 @@ def get_pdf_analysis(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"""SELECT file_name, page_count, pdf_text, quick_summary, chapters_json, created_date
-            FROM pdf_analyses WHERE user_id = {ph}
-            ORDER BY id DESC LIMIT 1""",
-        (user_id,)
-    )
-    row = cursor.fetchone()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute(
+            f"""SELECT file_name, page_count, pdf_text, quick_summary, chapters_json, created_date
+                FROM pdf_analyses WHERE user_id = {ph}
+                ORDER BY id DESC LIMIT 1""",
+            (user_id,)
+        )
+        row = cursor.fetchone()
 
-    if row:
-        return {
-            "file_name": row[0],
-            "page_count": row[1],
-            "pdf_text": row[2],
-            "quick_summary": row[3],
-            "chapters_json": row[4],
-            "created_date": row[5],
-        }
-    return None
+        if row:
+            return {
+                "file_name": row[0],
+                "page_count": row[1],
+                "pdf_text": row[2],
+                "quick_summary": row[3],
+                "chapters_json": row[4],
+                "created_date": row[5],
+            }
+        return None
+    except Exception as e:
+        print(f"❌ خطأ في get_pdf_analysis: {e}")
+        return None
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def has_pdf_analysis(user_id):
@@ -1078,14 +1262,19 @@ def has_pdf_analysis(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"SELECT COUNT(*) FROM pdf_analyses WHERE user_id = {ph}",
-        (user_id,)
-    )
-    count = cursor.fetchone()[0]
-    cursor.close()
-    conn.close()
-    return count > 0
+    try:
+        cursor.execute(
+            f"SELECT COUNT(*) FROM pdf_analyses WHERE user_id = {ph}",
+            (user_id,)
+        )
+        count = cursor.fetchone()[0]
+        return count > 0
+    except Exception as e:
+        print(f"❌ خطأ في has_pdf_analysis: {e}")
+        return False
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def clear_pdf_analysis(user_id):
@@ -1094,10 +1283,15 @@ def clear_pdf_analysis(user_id):
     cursor = conn.cursor()
     ph = placeholder()
 
-    cursor.execute(
-        f"DELETE FROM pdf_analyses WHERE user_id = {ph}",
-        (user_id,)
-    )
-    conn.commit()
-    cursor.close()
-    conn.close()
+    try:
+        cursor.execute(
+            f"DELETE FROM pdf_analyses WHERE user_id = {ph}",
+            (user_id,)
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"❌ خطأ في clear_pdf_analysis: {e}")
+        conn.rollback()
+    finally:
+        cursor.close()
+        release_connection(conn)
