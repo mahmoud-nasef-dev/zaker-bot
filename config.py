@@ -35,7 +35,7 @@ PDF_QUICK_SUMMARY_CHARS = 15000  # الحروف اللي هتتبعت للملخ
 
 # ===== إعدادات AI =====
 GROQ_MODEL = "openai/gpt-oss-20b"
-GEMINI_MODEL = "gemini-3.6-flash"
+GEMINI_MODEL = "gemini-flash-latest"
 AI_MAX_TOKENS = 4000
 AI_TEMPERATURE = 0.7
 
