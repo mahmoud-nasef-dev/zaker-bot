@@ -1,19 +1,16 @@
 import os
 import sys
 import io
-
-# Fix Windows encoding issue
-if sys.platform == "win32":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 import json
 import re
 import time
+import base64
+import tempfile
 from groq import Groq
-from google import genai
-from google.genai import types
 from dotenv import load_dotenv
 from pypdf import PdfReader
+import fitz  # pymupdf
+from PIL import Image
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -21,10 +18,16 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 
+# Fix Windows encoding issue
+if sys.platform == "win32":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 from config import (
     WELCOME_MESSAGE, ABOUT_MESSAGE, BOT_NAME, BOT_VERSION,
     DEVELOPER_NAME, DEVELOPER_USERNAME, ADMIN_IDS, BOT_USERNAME,
-    GROQ_MODEL, GEMINI_MODEL, AI_MAX_TOKENS, AI_TEMPERATURE
+    GROQ_MODEL, GROQ_VISION_MODEL, AI_MAX_TOKENS, AI_TEMPERATURE,
+    OCR_MAX_PAGES, OCR_IMAGE_DPI, OCR_MAX_IMAGE_SIZE
 )
 from database import (
     init_db, get_or_create_user, increment_usage,
@@ -64,59 +67,161 @@ from keyboards import (
 # ===== الإعدادات =====
 load_dotenv()
 
-# Groq (الموديل الأساسي - سريع جداً)
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
-# Gemini (احتياطي - للـ PDF المصور)
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-    print(f"✅ Gemini configured with {GEMINI_MODEL}")
-else:
-    gemini_client = None
-    print("⚠️ تحذير: GEMINI_API_KEY مش موجود!")
+# Groq (المحرك الأساسي الوحيد)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+print(f"✅ {BOT_NAME} v{BOT_VERSION}")
+print(f"🤖 Groq Text Model: {GROQ_MODEL}")
+print(f"👁️ Groq Vision Model: {GROQ_VISION_MODEL}")
 
-# ===== دالة AI موحدة (Groq + Gemini) =====
+
+# ===== دالة AI موحدة (Groq فقط) =====
 def ai_generate(prompt, use_groq=True, max_tokens=AI_MAX_TOKENS):
-    """بتوليد نص بـ Groq أو Gemini"""
+    """بتوليد نص بـ Groq"""
     if len(prompt) > 25000:
         prompt = prompt[:25000] + "..."
 
-    if use_groq:
-        try:
-            response = groq_client.chat.completions.create(
-                model=GROQ_MODEL,
-                messages=[
-                    {"role": "system", "content": "إنت مساعد دراسي مصري. كل ردودك بالعربي."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=AI_TEMPERATURE,
-                max_tokens=max_tokens,
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            print(f"⚠️ Groq فشل: {e}")
-            print("⏳ بنجرب Gemini...")
-
-    if gemini_client is None:
-        return "❌ Gemini مش متاح. راجع الإعدادات."
-
     try:
-        response = gemini_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                max_output_tokens=max_tokens,
-                temperature=AI_TEMPERATURE,
-            )
+        response = groq_client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": "إنت مساعد دراسي مصري. كل ردودك بالعربي."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=AI_TEMPERATURE,
+            max_tokens=max_tokens,
         )
-        return response.text
+        return response.choices[0].message.content
     except Exception as e:
-        print(f"⚠️ Gemini فشل كمان: {e}")
+        print(f"❌ Groq فشل: {e}")
         return "❌ حصل خطأ مؤقت في الاتصال بالـ AI. حاول تاني بعد دقيقة."
+
+
+# ===== دالة Groq Vision لاستخراج النص من الصور =====
+def extract_text_with_groq_vision(image_path):
+    """بتستخدم Groq Vision لاستخراج النص من صورة"""
+    try:
+        # اقرا الصورة وحولها لـ base64
+        with open(image_path, "rb") as img_file:
+            image_data = base64.b64encode(img_file.read()).decode("utf-8")
+
+        response = groq_client.chat.completions.create(
+            model=GROQ_VISION_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "استخرج كل النص الموجود في الصورة دي بالظبط زي ما هو. "
+                                "لو فيه نص إنجليزي اكتبه إنجليزي، ولو فيه عربي اكتبه عربي. "
+                                "حافظ على التنسيق (عناوين، نقاط، معادلات). "
+                                "متضيفش أي كلام من عندك."
+                            )
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{image_data}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            temperature=0.1,
+            max_tokens=4000,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"❌ Groq Vision فشل: {e}")
+        return ""
+
+
+def convert_pdf_pages_to_images(pdf_path, max_pages=OCR_MAX_PAGES, dpi=OCR_IMAGE_DPI):
+    """بتحول صفحات الـ PDF لصور باستخدام pymupdf"""
+    images = []
+    try:
+        doc = fitz.open(pdf_path)
+        total_pages = min(len(doc), max_pages)
+        print(f"📄 بنحول {total_pages} صفحة لصور...")
+
+        for page_num in range(total_pages):
+            page = doc[page_num]
+            # حول الصفحة لصورة
+            pix = page.get_pixmap(dpi=dpi)
+
+            # احفظ الصورة مؤقتاً
+            temp_img = tempfile.NamedTemporaryFile(
+                suffix=".png", delete=False, dir="."
+            )
+            pix.save(temp_img.name)
+
+            # صغر الصورة لو كبيرة
+            img = Image.open(temp_img.name)
+            if max(img.size) > OCR_MAX_IMAGE_SIZE:
+                ratio = OCR_MAX_IMAGE_SIZE / max(img.size)
+                new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+                img = img.resize(new_size, Image.LANCZOS)
+                img.save(temp_img.name)
+
+            images.append(temp_img.name)
+
+        doc.close()
+        print(f"✅ اتحولت {len(images)} صورة")
+        return images
+
+    except Exception as e:
+        print(f"❌ فشل تحويل PDF لصور: {e}")
+        return []
+
+
+def process_pdf(file_path):
+    """بيحاول يقرا PDF بـ pypdf الأول، لو فشل → Groq Vision"""
+    # المحاولة الأولى: pypdf (أسرع وأرخص)
+    try:
+        reader = PdfReader(file_path)
+        text = ""
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            text += page_text + "\n"
+
+        if len(text.strip()) > 200:
+            print(f"✅ pypdf: {len(text)} حرف")
+            return text
+        else:
+            print(f"⚠️ pypdf رجع نص قصير ({len(text)} حرف) — بنجرب Groq Vision")
+    except Exception as e:
+        print(f"⚠️ pypdf فشل: {e} — بنجرب Groq Vision")
+
+    # المحاولة التانية: Groq Vision (OCR)
+    print("👁️ بنستخدم Groq Vision للـ OCR...")
+    image_paths = convert_pdf_pages_to_images(file_path)
+
+    if not image_paths:
+        print("❌ مقدرناش نحول الـ PDF لصور")
+        return ""
+
+    all_text = []
+    for i, img_path in enumerate(image_paths):
+        print(f"📖 بنقرا الصفحة {i+1} من {len(image_paths)}...")
+        page_text = extract_text_with_groq_vision(img_path)
+        if page_text:
+            all_text.append(f"--- صفحة {i+1} ---\n{page_text}")
+
+        # امسح الصورة المؤقتة
+        try:
+            os.remove(img_path)
+        except:
+            pass
+
+    full_text = "\n\n".join(all_text)
+    print(f"✅ Groq Vision: {len(full_text)} حرف من {len(image_paths)} صفحة")
+
+    return full_text
 
 
 # ===== دالة آمنة لتعديل الرسائل =====
@@ -190,66 +295,6 @@ def translate_text(text, target_language="الإنجليزية"):
 def summarize_text(text):
     prompt = f"لخص النص ده في 3 نقاط بس، بالعربي:\n\n{text}"
     return ai_generate(prompt, max_tokens=1000)
-
-
-def process_pdf(file_path):
-    """بيحاول يقرا PDF بـ pypdf الأول، لو فشل → Gemini"""
-    try:
-        reader = PdfReader(file_path)
-        text = ""
-        for page in reader.pages:
-            page_text = page.extract_text() or ""
-            text += page_text + "\n"
-
-        if len(text.strip()) > 200:
-            print(f"✅ pypdf: {len(text)} حرف")
-            return text
-        else:
-            print(f"⚠️ pypdf رجع نص قصير ({len(text)} حرف) — بنجرب Gemini")
-    except Exception as e:
-        print(f"⚠️ pypdf فشل: {e} — بنجرب Gemini")
-
-    if gemini_client is None:
-        print("❌ Gemini مش متاح (المفتاح مش موجود)")
-        return ""
-
-    try:
-        print("⏳ جاري رفع الملف على Gemini...")
-        uploaded_file = gemini_client.files.upload(file=file_path)
-
-        max_wait = 60
-        waited = 0
-        while uploaded_file.state.name == "PROCESSING" and waited < max_wait:
-            time.sleep(2)
-            waited += 2
-            uploaded_file = gemini_client.files.get(name=uploaded_file.name)
-
-        if uploaded_file.state.name == "FAILED":
-            print("❌ Gemini فشل في معالجة الملف")
-            return ""
-
-        print("⏳ جاري استخراج النص من Gemini...")
-        response = gemini_client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[
-                uploaded_file,
-                "استخرج كل النص اللي في الملف ده. رجّع النص زي ما هو (إنجليزي يبقى إنجليزي، عربي يبقى عربي). متضيفش أي كلام من عندك."
-            ]
-        )
-
-        text = response.text or ""
-        print(f"✅ Gemini: {len(text)} حرف")
-
-        try:
-            gemini_client.files.delete(name=uploaded_file.name)
-        except:
-            pass
-
-        return text
-
-    except Exception as e:
-        print(f"❌ Gemini فشل كمان: {e}")
-        return ""
 
 
 def analyze_pdf_content(text, analysis_type="summary", user_subjects=None, user_college=None):
@@ -1870,17 +1915,17 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await document.get_file()
         await file.download_to_drive(pdf_path)
 
-        await waiting.edit_text("📖 جاري قراءة المحتوى...")
+        await waiting.edit_text("📖 جاري قراءة المحتوى...\n\n_لو الملف فيه صور، ممكن ياخد وقت أطول_")
         pdf_text = process_pdf(pdf_path)
 
         if not pdf_text.strip():
             await waiting.edit_text(
                 "❌ الملف فاضي أو مش مقروء.\n\n"
                 "💡 *الأسباب المحتملة:*\n"
-                "• الملف عبارة عن صور (Scanned) ومحتاج OCR\n"
+                "• الملف تالف أو غير مدعوم\n"
                 "• الملف محمي بكلمة سر\n"
-                "• مشكلة مؤقتة في الاتصال بالـ AI\n\n"
-                "🔁 جرب ترفع الملف تاني، ولو استمرت المشكلة كلم المطور."
+                "• الملف كبير جداً (أكتر من 10 صفحات صور)\n\n"
+                "🔁 جرب ترفع الملف تاني، أو ارفع جزء منه بس."
             )
             if os.path.exists(pdf_path):
                 os.remove(pdf_path)
@@ -2192,7 +2237,7 @@ def main():
     print(f"✅ {BOT_NAME} v{BOT_VERSION} شغال!")
     print(f"👨‍💻 المطور: {DEVELOPER_NAME}")
     print(f"🤖 Groq Model: {GROQ_MODEL}")
-    print(f"🤖 Gemini Model: {GEMINI_MODEL}")
+    print(f"👁️ Groq Vision Model: {GROQ_VISION_MODEL}")
     print("اضغط Ctrl+C للإيقاف.")
     app.run_polling()
 

@@ -129,7 +129,7 @@ def add_header_footer(canvas, doc):
 
 
 def create_pdf_report(analysis_text, user_name, output_path="report.pdf"):
-    """بتنشئ ملف PDF من النص اللي Gemini رجعه"""
+    """بتنشئ ملف PDF من النص اللي AI رجعه"""
     doc = SimpleDocTemplate(
         output_path,
         pagesize=A4,

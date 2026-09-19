@@ -1,5 +1,5 @@
 # ============================================
-#   متطلبات مشروع ذاكر - v1.3.0 (google-genai)
+#   متطلبات مشروع ذاكر - v1.4.0 (Groq Vision)
 # ============================================
 
 # ===== Telegram Bot =====
@@ -7,10 +7,11 @@ python-telegram-bot==21.6
 
 # ===== AI Providers =====
 groq==0.13.0
-google-genai==1.0.0
 
 # ===== PDF Processing =====
 pypdf==5.1.0
+pymupdf==1.24.14
+pillow==11.0.0
 reportlab==4.2.5
 
 # ===== Arabic Support =====
