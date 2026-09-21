@@ -7,10 +7,9 @@ import time
 import base64
 import tempfile
 from groq import Groq
+from mistralai import Mistral
 from dotenv import load_dotenv
 from pypdf import PdfReader
-import fitz  # pymupdf
-from PIL import Image
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -26,8 +25,8 @@ if sys.platform == "win32":
 from config import (
     WELCOME_MESSAGE, ABOUT_MESSAGE, BOT_NAME, BOT_VERSION,
     DEVELOPER_NAME, DEVELOPER_USERNAME, ADMIN_IDS, BOT_USERNAME,
-    GROQ_MODEL, GROQ_VISION_MODEL, AI_MAX_TOKENS, AI_TEMPERATURE,
-    OCR_MAX_PAGES, OCR_IMAGE_DPI, OCR_MAX_IMAGE_SIZE
+    GROQ_MODEL, AI_MAX_TOKENS, AI_TEMPERATURE,
+    MISTRAL_OCR_MODEL, MISTRAL_OCR_MAX_PAGES, MISTRAL_OCR_TIMEOUT
 )
 from database import (
     init_db, get_or_create_user, increment_usage,
@@ -67,15 +66,22 @@ from keyboards import (
 # ===== الإعدادات =====
 load_dotenv()
 
-# Groq (المحرك الأساسي الوحيد)
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-groq_client = Groq(api_key=GROQ_API_KEY)
+# Groq (للتحليل)
+groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+# Mistral (للـ OCR)
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+if MISTRAL_API_KEY:
+    mistral_client = Mistral(api_key=MISTRAL_API_KEY)
+    print(f"✅ Mistral OCR configured with {MISTRAL_OCR_MODEL}")
+else:
+    mistral_client = None
+    print("⚠️ تحذير: MISTRAL_API_KEY مش موجود!")
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 print(f"✅ {BOT_NAME} v{BOT_VERSION}")
 print(f"🤖 Groq Text Model: {GROQ_MODEL}")
-print(f"👁️ Groq Vision Model: {GROQ_VISION_MODEL}")
 
 
 # ===== دالة AI موحدة (Groq فقط) =====
@@ -100,87 +106,63 @@ def ai_generate(prompt, use_groq=True, max_tokens=AI_MAX_TOKENS):
         return "❌ حصل خطأ مؤقت في الاتصال بالـ AI. حاول تاني بعد دقيقة."
 
 
-# ===== دالة Groq Vision لاستخراج النص من الصور =====
-def extract_text_with_groq_vision(image_path):
-    """بتستخدم Groq Vision لاستخراج النص من صورة"""
-    try:
-        # اقرا الصورة وحولها لـ base64
-        with open(image_path, "rb") as img_file:
-            image_data = base64.b64encode(img_file.read()).decode("utf-8")
+# ===== دالة Mistral OCR لاستخراج النص من PDF =====
+def extract_text_with_mistral_ocr(pdf_path):
+    """بتستخدم Mistral OCR لاستخراج النص من PDF (صور + نصوص)"""
+    if mistral_client is None:
+        print("❌ Mistral مش متاح (المفتاح مش موجود)")
+        return ""
 
-        response = groq_client.chat.completions.create(
-            model=GROQ_VISION_MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "استخرج كل النص الموجود في الصورة دي بالظبط زي ما هو. "
-                                "لو فيه نص إنجليزي اكتبه إنجليزي، ولو فيه عربي اكتبه عربي. "
-                                "حافظ على التنسيق (عناوين، نقاط، معادلات). "
-                                "متضيفش أي كلام من عندك."
-                            )
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{image_data}"
-                            }
-                        }
-                    ]
-                }
-            ],
-            temperature=0.1,
-            max_tokens=4000,
+    try:
+        print("🔍 جاري رفع الملف على Mistral OCR...")
+
+        # ارفع الملف
+        with open(pdf_path, "rb") as f:
+            uploaded_file = mistral_client.files.upload(
+                file={
+                    "file_name": os.path.basename(pdf_path),
+                    "content": f,
+                },
+                purpose="ocr"
+            )
+
+        print(f"✅ تم الرفع: {uploaded_file.id}")
+
+        # احصل على رابط الرفع
+        signed_url = mistral_client.files.get_signed_url(file_id=uploaded_file.id)
+
+        # استخدم Mistral OCR
+        print("📖 جاري استخراج النص...")
+        ocr_response = mistral_client.ocr.process(
+            model=MISTRAL_OCR_MODEL,
+            document={
+                "type": "document_url",
+                "document_url": signed_url.url,
+            },
         )
-        return response.choices[0].message.content
+
+        # اجمع النص من كل الصفحات
+        full_text = ""
+        for page in ocr_response.pages:
+            full_text += f"\n--- صفحة {page.index + 1} ---\n{page.markdown}\n"
+
+        print(f"✅ Mistral OCR: {len(full_text)} حرف من {len(ocr_response.pages)} صفحة")
+
+        # امسح الملف من Mistral
+        try:
+            mistral_client.files.delete(file_id=uploaded_file.id)
+        except:
+            pass
+
+        return full_text
+
     except Exception as e:
-        print(f"❌ Groq Vision فشل: {e}")
+        print(f"❌ Mistral OCR فشل: {e}")
         return ""
 
 
-def convert_pdf_pages_to_images(pdf_path, max_pages=OCR_MAX_PAGES, dpi=OCR_IMAGE_DPI):
-    """بتحول صفحات الـ PDF لصور باستخدام pymupdf"""
-    images = []
-    try:
-        doc = fitz.open(pdf_path)
-        total_pages = min(len(doc), max_pages)
-        print(f"📄 بنحول {total_pages} صفحة لصور...")
-
-        for page_num in range(total_pages):
-            page = doc[page_num]
-            # حول الصفحة لصورة
-            pix = page.get_pixmap(dpi=dpi)
-
-            # احفظ الصورة مؤقتاً
-            temp_img = tempfile.NamedTemporaryFile(
-                suffix=".png", delete=False, dir="."
-            )
-            pix.save(temp_img.name)
-
-            # صغر الصورة لو كبيرة
-            img = Image.open(temp_img.name)
-            if max(img.size) > OCR_MAX_IMAGE_SIZE:
-                ratio = OCR_MAX_IMAGE_SIZE / max(img.size)
-                new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
-                img = img.resize(new_size, Image.LANCZOS)
-                img.save(temp_img.name)
-
-            images.append(temp_img.name)
-
-        doc.close()
-        print(f"✅ اتحولت {len(images)} صورة")
-        return images
-
-    except Exception as e:
-        print(f"❌ فشل تحويل PDF لصور: {e}")
-        return []
-
-
 def process_pdf(file_path):
-    """بيحاول يقرا PDF بـ pypdf الأول، لو فشل → Groq Vision"""
+    """بيحاول يقرا PDF بـ pypdf الأول، لو فشل → Mistral OCR"""
     # المحاولة الأولى: pypdf (أسرع وأرخص)
     try:
         reader = PdfReader(file_path)
@@ -193,35 +175,13 @@ def process_pdf(file_path):
             print(f"✅ pypdf: {len(text)} حرف")
             return text
         else:
-            print(f"⚠️ pypdf رجع نص قصير ({len(text)} حرف) — بنجرب Groq Vision")
+            print(f"⚠️ pypdf رجع نص قصير ({len(text)} حرف) — بنجرب Mistral OCR")
     except Exception as e:
-        print(f"⚠️ pypdf فشل: {e} — بنجرب Groq Vision")
+        print(f"⚠️ pypdf فشل: {e} — بنجرب Mistral OCR")
 
-    # المحاولة التانية: Groq Vision (OCR)
-    print("👁️ بنستخدم Groq Vision للـ OCR...")
-    image_paths = convert_pdf_pages_to_images(file_path)
-
-    if not image_paths:
-        print("❌ مقدرناش نحول الـ PDF لصور")
-        return ""
-
-    all_text = []
-    for i, img_path in enumerate(image_paths):
-        print(f"📖 بنقرا الصفحة {i+1} من {len(image_paths)}...")
-        page_text = extract_text_with_groq_vision(img_path)
-        if page_text:
-            all_text.append(f"--- صفحة {i+1} ---\n{page_text}")
-
-        # امسح الصورة المؤقتة
-        try:
-            os.remove(img_path)
-        except:
-            pass
-
-    full_text = "\n\n".join(all_text)
-    print(f"✅ Groq Vision: {len(full_text)} حرف من {len(image_paths)} صفحة")
-
-    return full_text
+    # المحاولة التانية: Mistral OCR
+    print("🔍 بنستخدم Mistral OCR...")
+    return extract_text_with_mistral_ocr(file_path)
 
 
 # ===== دالة آمنة لتعديل الرسائل =====
@@ -1924,7 +1884,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "💡 *الأسباب المحتملة:*\n"
                 "• الملف تالف أو غير مدعوم\n"
                 "• الملف محمي بكلمة سر\n"
-                "• الملف كبير جداً (أكتر من 10 صفحات صور)\n\n"
+                "• مشكلة مؤقتة في الاتصال بالـ AI\n\n"
                 "🔁 جرب ترفع الملف تاني، أو ارفع جزء منه بس."
             )
             if os.path.exists(pdf_path):
@@ -2237,7 +2197,7 @@ def main():
     print(f"✅ {BOT_NAME} v{BOT_VERSION} شغال!")
     print(f"👨‍💻 المطور: {DEVELOPER_NAME}")
     print(f"🤖 Groq Model: {GROQ_MODEL}")
-    print(f"👁️ Groq Vision Model: {GROQ_VISION_MODEL}")
+    print(f"🔍 Mistral OCR Model: {MISTRAL_OCR_MODEL}")
     print("اضغط Ctrl+C للإيقاف.")
     app.run_polling()
 

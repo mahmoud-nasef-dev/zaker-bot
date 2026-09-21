@@ -1,6 +1,6 @@
 # ============================================
 #   إعدادات البوت - ذاكر
-#   Version: 1.4.0 (Groq Vision)
+#   Version: 1.5.0 (Mistral OCR + Groq)
 # ============================================
 
 # ===== معلومات المطور =====
@@ -11,7 +11,7 @@ DEVELOPER_ID = 8910760285
 # ===== معلومات البوت =====
 BOT_NAME = "ذاكر"
 BOT_USERNAME = "@trans_service_egypt_bot"
-BOT_VERSION = "1.4.0"
+BOT_VERSION = "1.5.0"
 
 # ===== صلاحيات الأدمن =====
 ADMIN_IDS = [
@@ -33,16 +33,15 @@ PDF_CHUNK_SIZE = 6000
 PDF_MAX_CHUNKS = 8
 PDF_QUICK_SUMMARY_CHARS = 15000
 
-# ===== إعدادات AI (Groq فقط) =====
+# ===== إعدادات AI (Groq للتحليل) =====
 GROQ_MODEL = "openai/gpt-oss-20b"
-GROQ_VISION_MODEL = "llama-3.2-90b-vision-preview"
 AI_MAX_TOKENS = 4000
 AI_TEMPERATURE = 0.7
 
-# ===== إعدادات OCR =====
-OCR_MAX_PAGES = 10           # أقصى عدد صفحات نحولها لصور (للأداء)
-OCR_IMAGE_DPI = 150          # دقة الصورة (أعلى = أوضح بس أبطأ)
-OCR_MAX_IMAGE_SIZE = 2000    # أقصى بُعد للصورة بالبكسل
+# ===== إعدادات Mistral OCR =====
+MISTRAL_OCR_MODEL = "mistral-ocr-latest"
+MISTRAL_OCR_MAX_PAGES = 50     # أقصى عدد صفحات نبعتها لـ Mistral
+MISTRAL_OCR_TIMEOUT = 120      # أقصى وقت انتظار (ثانية)
 
 # ===== إعدادات الـ Pagination =====
 CHAPTERS_MIN = 3
