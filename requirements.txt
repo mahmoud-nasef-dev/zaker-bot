@@ -1,5 +1,5 @@
 # ============================================
-#   متطلبات مشروع ذاكر - v1.5.0 (Mistral OCR)
+#   متطلبات مشروع ذاكر - v1.6.0 (Mistral OCR REST API)
 # ============================================
 
 # ===== Telegram Bot =====
@@ -7,12 +7,9 @@ python-telegram-bot==21.6
 
 # ===== AI Providers =====
 groq==0.13.0
-mistralai==1.2.5
 
 # ===== PDF Processing =====
 pypdf==5.1.0
-pymupdf==1.24.14
-pillow==11.0.0
 reportlab==4.2.5
 
 # ===== Arabic Support =====

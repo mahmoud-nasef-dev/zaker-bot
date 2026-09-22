@@ -5,9 +5,8 @@ import json
 import re
 import time
 import base64
-import tempfile
+import httpx
 from groq import Groq
-from mistralai import Mistral
 from dotenv import load_dotenv
 from pypdf import PdfReader
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -26,7 +25,7 @@ from config import (
     WELCOME_MESSAGE, ABOUT_MESSAGE, BOT_NAME, BOT_VERSION,
     DEVELOPER_NAME, DEVELOPER_USERNAME, ADMIN_IDS, BOT_USERNAME,
     GROQ_MODEL, AI_MAX_TOKENS, AI_TEMPERATURE,
-    MISTRAL_OCR_MODEL, MISTRAL_OCR_MAX_PAGES, MISTRAL_OCR_TIMEOUT
+    MISTRAL_OCR_MODEL, MISTRAL_OCR_TIMEOUT
 )
 from database import (
     init_db, get_or_create_user, increment_usage,
@@ -71,11 +70,11 @@ groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 # Mistral (للـ OCR)
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+MISTRAL_API_BASE = "https://api.mistral.ai/v1"
+
 if MISTRAL_API_KEY:
-    mistral_client = Mistral(api_key=MISTRAL_API_KEY)
     print(f"✅ Mistral OCR configured with {MISTRAL_OCR_MODEL}")
 else:
-    mistral_client = None
     print("⚠️ تحذير: MISTRAL_API_KEY مش موجود!")
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -106,51 +105,99 @@ def ai_generate(prompt, use_groq=True, max_tokens=AI_MAX_TOKENS):
         return "❌ حصل خطأ مؤقت في الاتصال بالـ AI. حاول تاني بعد دقيقة."
 
 
-# ===== دالة Mistral OCR لاستخراج النص من PDF =====
+# ===== دالة Mistral OCR (REST API مباشرة) =====
 def extract_text_with_mistral_ocr(pdf_path):
-    """بتستخدم Mistral OCR لاستخراج النص من PDF (صور + نصوص)"""
-    if mistral_client is None:
+    """بتستخدم Mistral OCR REST API لاستخراج النص من PDF"""
+    if not MISTRAL_API_KEY:
         print("❌ Mistral مش متاح (المفتاح مش موجود)")
         return ""
 
     try:
-        print("🔍 جاري رفع الملف على Mistral OCR...")
+        print("🔍 جاري رفع الملف على Mistral...")
 
-        # ارفع الملف
+        headers = {
+            "Authorization": f"Bearer {MISTRAL_API_KEY}"
+        }
+
+        # ===== 1. ارفع الملف =====
         with open(pdf_path, "rb") as f:
-            uploaded_file = mistral_client.files.upload(
-                file={
-                    "file_name": os.path.basename(pdf_path),
-                    "content": f,
-                },
-                purpose="ocr"
+            files = {
+                "file": (os.path.basename(pdf_path), f, "application/pdf")
+            }
+            data = {"purpose": "ocr"}
+
+            with httpx.Client(timeout=MISTRAL_OCR_TIMEOUT) as client:
+                upload_response = client.post(
+                    f"{MISTRAL_API_BASE}/files",
+                    headers=headers,
+                    files=files,
+                    data=data,
+                )
+
+        if upload_response.status_code != 200:
+            print(f"❌ فشل رفع الملف: {upload_response.status_code} — {upload_response.text}")
+            return ""
+
+        upload_data = upload_response.json()
+        file_id = upload_data.get("id")
+        print(f"✅ تم الرفع: {file_id}")
+
+        # ===== 2. احصل على signed URL =====
+        with httpx.Client(timeout=MISTRAL_OCR_TIMEOUT) as client:
+            url_response = client.get(
+                f"{MISTRAL_API_BASE}/files/{file_id}/url",
+                headers=headers,
             )
 
-        print(f"✅ تم الرفع: {uploaded_file.id}")
+        if url_response.status_code != 200:
+            print(f"❌ فشل الحصول على الرابط: {url_response.status_code} — {url_response.text}")
+            return ""
 
-        # احصل على رابط الرفع
-        signed_url = mistral_client.files.get_signed_url(file_id=uploaded_file.id)
+        signed_url = url_response.json().get("url")
+        print(f"✅ تم الحصول على الرابط")
 
-        # استخدم Mistral OCR
+        # ===== 3. استخدم OCR =====
         print("📖 جاري استخراج النص...")
-        ocr_response = mistral_client.ocr.process(
-            model=MISTRAL_OCR_MODEL,
-            document={
+        ocr_payload = {
+            "model": MISTRAL_OCR_MODEL,
+            "document": {
                 "type": "document_url",
-                "document_url": signed_url.url,
+                "document_url": signed_url,
             },
-        )
+        }
+
+        with httpx.Client(timeout=MISTRAL_OCR_TIMEOUT) as client:
+            ocr_response = client.post(
+                f"{MISTRAL_API_BASE}/ocr",
+                headers={
+                    "Authorization": f"Bearer {MISTRAL_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=ocr_payload,
+            )
+
+        if ocr_response.status_code != 200:
+            print(f"❌ OCR فشل: {ocr_response.status_code} — {ocr_response.text}")
+            return ""
+
+        ocr_data = ocr_response.json()
+        pages = ocr_data.get("pages", [])
 
         # اجمع النص من كل الصفحات
         full_text = ""
-        for page in ocr_response.pages:
-            full_text += f"\n--- صفحة {page.index + 1} ---\n{page.markdown}\n"
+        for i, page in enumerate(pages):
+            page_text = page.get("markdown", "")
+            full_text += f"\n--- صفحة {i + 1} ---\n{page_text}\n"
 
-        print(f"✅ Mistral OCR: {len(full_text)} حرف من {len(ocr_response.pages)} صفحة")
+        print(f"✅ Mistral OCR: {len(full_text)} حرف من {len(pages)} صفحة")
 
-        # امسح الملف من Mistral
+        # ===== 4. امسح الملف من Mistral =====
         try:
-            mistral_client.files.delete(file_id=uploaded_file.id)
+            with httpx.Client(timeout=30) as client:
+                client.delete(
+                    f"{MISTRAL_API_BASE}/files/{file_id}",
+                    headers=headers,
+                )
         except:
             pass
 
