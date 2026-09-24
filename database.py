@@ -75,6 +75,8 @@ POINTS_REWARDS = {
     "analysis_done": 30,
     "pomodoro_session": 20,
     "pomodoro_4_sessions": 50,
+    "quiz_perfect": 30,
+    "mistake_reviewed": 10,
 }
 
 # ===== المستويات =====
@@ -99,6 +101,10 @@ def get_level_info(points):
 def init_db():
     conn = get_connection()
     cursor = conn.cursor()
+
+    # ============================================
+    # ===== الجداول الأساسية (V1) =====
+    # ============================================
 
     # ===== جدول users =====
     if USE_POSTGRES:
@@ -288,7 +294,7 @@ def init_db():
         """)
 
     # ============================================
-    # ===== جداول V2 - Analytics (جديد - v2.0) =====
+    # ===== جداول V2 - Analytics (Phase 0.5) =====
     # ============================================
 
     # ===== جدول activity_events =====
@@ -313,20 +319,152 @@ def init_db():
             )
         """)
 
+    # ============================================
+    # ===== جداول V2 - Quiz Engine (Phase 1) =====
+    # ============================================
+
+    # ===== جدول concepts =====
+    if USE_POSTGRES:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS concepts (
+                id BIGSERIAL PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                importance REAL DEFAULT 0.5,
+                difficulty REAL DEFAULT 0.5,
+                created_at TEXT
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS concepts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                importance REAL DEFAULT 0.5,
+                difficulty REAL DEFAULT 0.5,
+                created_at TEXT
+            )
+        """)
+
+    # ===== جدول concept_relationships =====
+    if USE_POSTGRES:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS concept_relationships (
+                id BIGSERIAL PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                from_concept_id INTEGER NOT NULL,
+                to_concept_id INTEGER NOT NULL,
+                relationship_type TEXT,
+                confidence REAL DEFAULT 0.5
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS concept_relationships (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id TEXT NOT NULL,
+                from_concept_id INTEGER NOT NULL,
+                to_concept_id INTEGER NOT NULL,
+                relationship_type TEXT,
+                confidence REAL DEFAULT 0.5
+            )
+        """)
+
+    # ===== جدول questions =====
+    if USE_POSTGRES:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS questions (
+                id BIGSERIAL PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                concept_id INTEGER,
+                subconcept_id TEXT,
+                question_text TEXT NOT NULL,
+                options TEXT,
+                correct_answer TEXT,
+                explanation TEXT,
+                difficulty TEXT,
+                difficulty_score INTEGER,
+                bloom_level TEXT,
+                question_type TEXT DEFAULT 'mcq',
+                misconception_map TEXT,
+                created_at TEXT
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id TEXT NOT NULL,
+                concept_id INTEGER,
+                subconcept_id TEXT,
+                question_text TEXT NOT NULL,
+                options TEXT,
+                correct_answer TEXT,
+                explanation TEXT,
+                difficulty TEXT,
+                difficulty_score INTEGER,
+                bloom_level TEXT,
+                question_type TEXT DEFAULT 'mcq',
+                misconception_map TEXT,
+                created_at TEXT
+            )
+        """)
+
+    # ===== جدول quiz_sessions =====
+    if USE_POSTGRES:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS quiz_sessions (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                source_type TEXT,
+                source_id TEXT,
+                mode TEXT,
+                difficulty TEXT,
+                question_count INTEGER,
+                current_question INTEGER DEFAULT 0,
+                score INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'active',
+                started_at TEXT,
+                completed_at TEXT
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS quiz_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                source_type TEXT,
+                source_id TEXT,
+                mode TEXT,
+                difficulty TEXT,
+                question_count INTEGER,
+                current_question INTEGER DEFAULT 0,
+                score INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'active',
+                started_at TEXT,
+                completed_at TEXT
+            )
+        """)
+
     # ===== جدول quiz_attempts =====
     if USE_POSTGRES:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS quiz_attempts (
                 id BIGSERIAL PRIMARY KEY,
+                session_id INTEGER,
                 user_id BIGINT NOT NULL,
-                lecture_id TEXT,
+                question_id INTEGER,
+                concept_id INTEGER,
                 question_text TEXT,
                 correct_answer TEXT,
                 user_answer TEXT,
                 is_correct INTEGER,
-                time_taken INTEGER,
-                difficulty TEXT,
-                topic TEXT,
+                response_time INTEGER,
+                attempt_number INTEGER DEFAULT 1,
+                misconception_detected TEXT,
                 timestamp TEXT NOT NULL
             )
         """)
@@ -334,15 +472,17 @@ def init_db():
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS quiz_attempts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER,
                 user_id INTEGER NOT NULL,
-                lecture_id TEXT,
+                question_id INTEGER,
+                concept_id INTEGER,
                 question_text TEXT,
                 correct_answer TEXT,
                 user_answer TEXT,
                 is_correct INTEGER,
-                time_taken INTEGER,
-                difficulty TEXT,
-                topic TEXT,
+                response_time INTEGER,
+                attempt_number INTEGER DEFAULT 1,
+                misconception_detected TEXT,
                 timestamp TEXT NOT NULL
             )
         """)
@@ -353,12 +493,16 @@ def init_db():
             CREATE TABLE IF NOT EXISTS knowledge_states (
                 id BIGSERIAL PRIMARY KEY,
                 user_id BIGINT NOT NULL,
-                topic TEXT NOT NULL,
-                correct_count INTEGER DEFAULT 0,
-                wrong_count INTEGER DEFAULT 0,
+                concept_id INTEGER NOT NULL,
+                concept_name TEXT,
+                mastery REAL DEFAULT 0.0,
+                confidence REAL DEFAULT 0.0,
+                attempts INTEGER DEFAULT 0,
+                correct INTEGER DEFAULT 0,
+                streak INTEGER DEFAULT 0,
+                last_correct INTEGER DEFAULT 0,
                 last_seen TEXT,
-                mastery_level INTEGER DEFAULT 0,
-                UNIQUE(user_id, topic)
+                UNIQUE(user_id, concept_id)
             )
         """)
     else:
@@ -366,21 +510,104 @@ def init_db():
             CREATE TABLE IF NOT EXISTS knowledge_states (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
-                topic TEXT NOT NULL,
-                correct_count INTEGER DEFAULT 0,
-                wrong_count INTEGER DEFAULT 0,
+                concept_id INTEGER NOT NULL,
+                concept_name TEXT,
+                mastery REAL DEFAULT 0.0,
+                confidence REAL DEFAULT 0.0,
+                attempts INTEGER DEFAULT 0,
+                correct INTEGER DEFAULT 0,
+                streak INTEGER DEFAULT 0,
+                last_correct INTEGER DEFAULT 0,
                 last_seen TEXT,
-                mastery_level INTEGER DEFAULT 0,
-                UNIQUE(user_id, topic)
+                UNIQUE(user_id, concept_id)
+            )
+        """)
+
+    # ===== جدول misconceptions =====
+    if USE_POSTGRES:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS misconceptions (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                concept_id INTEGER,
+                concept_name TEXT,
+                misconception TEXT,
+                confidence REAL DEFAULT 0.0,
+                evidence_count INTEGER DEFAULT 1,
+                first_detected TEXT,
+                last_detected TEXT,
+                resolved_at TEXT
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS misconceptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                concept_id INTEGER,
+                concept_name TEXT,
+                misconception TEXT,
+                confidence REAL DEFAULT 0.0,
+                evidence_count INTEGER DEFAULT 1,
+                first_detected TEXT,
+                last_detected TEXT,
+                resolved_at TEXT
+            )
+        """)
+
+    # ===== جدول mistake_reviews =====
+    if USE_POSTGRES:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mistake_reviews (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                attempt_id INTEGER,
+                question_id INTEGER,
+                concept_id INTEGER,
+                concept_name TEXT,
+                mistake_type TEXT,
+                misconception_id INTEGER,
+                review_status TEXT DEFAULT 'pending',
+                review_count INTEGER DEFAULT 0,
+                next_review_at TEXT,
+                last_reviewed_at TEXT,
+                successful_reviews INTEGER DEFAULT 0,
+                failed_reviews INTEGER DEFAULT 0,
+                created_at TEXT,
+                resolved_at TEXT
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS mistake_reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                attempt_id INTEGER,
+                question_id INTEGER,
+                concept_id INTEGER,
+                concept_name TEXT,
+                mistake_type TEXT,
+                misconception_id INTEGER,
+                review_status TEXT DEFAULT 'pending',
+                review_count INTEGER DEFAULT 0,
+                next_review_at TEXT,
+                last_reviewed_at TEXT,
+                successful_reviews INTEGER DEFAULT 0,
+                failed_reviews INTEGER DEFAULT 0,
+                created_at TEXT,
+                resolved_at TEXT
             )
         """)
 
     conn.commit()
     cursor.close()
     release_connection(conn)
+    
 
-
+# ============================================
 # ===== دوال المستخدمين =====
+# ============================================
+
 def get_or_create_user(user_id, username, first_name, invited_by=None):
     conn = get_connection()
     cursor = conn.cursor()
@@ -534,7 +761,10 @@ def get_user_college(user_id):
         release_connection(conn)
 
 
+# ============================================
 # ===== دوال النقاط =====
+# ============================================
+
 def add_points(user_id, amount):
     conn = get_connection()
     cursor = conn.cursor()
@@ -703,7 +933,10 @@ def set_user_plan(user_id, plan):
         release_connection(conn)
 
 
+# ============================================
 # ===== الهدية اليومية =====
+# ============================================
+
 def claim_daily_gift(user_id):
     conn = get_connection()
     cursor = conn.cursor()
@@ -790,7 +1023,10 @@ def claim_daily_gift(user_id):
         release_connection(conn)
 
 
+# ============================================
 # ===== المتصدرين =====
+# ============================================
+
 def get_leaderboard(limit=10):
     conn = get_connection()
     cursor = conn.cursor()
@@ -813,7 +1049,10 @@ def get_leaderboard(limit=10):
         release_connection(conn)
 
 
+# ============================================
 # ===== الإحصائيات =====
+# ============================================
+
 def get_detailed_stats():
     conn = get_connection()
     cursor = conn.cursor()
@@ -905,9 +1144,12 @@ def get_all_user_ids():
     finally:
         cursor.close()
         release_connection(conn)
+        
 
-
+# ============================================
 # ===== دوال المواد =====
+# ============================================
+
 def get_user_subjects(user_id):
     conn = get_connection()
     cursor = conn.cursor()
@@ -1014,7 +1256,10 @@ def has_subjects(user_id):
         release_connection(conn)
 
 
+# ============================================
 # ===== دوال التحليل الشخصي =====
+# ============================================
+
 def save_analysis(user_id, study_time, focus_duration, learning_style, hard_subject, goal, exam_timing, analysis_result):
     conn = get_connection()
     cursor = conn.cursor()
@@ -1098,7 +1343,10 @@ def has_analysis(user_id):
         release_connection(conn)
 
 
+# ============================================
 # ===== دوال خطة المذاكرة =====
+# ============================================
+
 def save_study_plan(user_id, plan_text, plan_json=None):
     conn = get_connection()
     cursor = conn.cursor()
@@ -1177,7 +1425,10 @@ def has_study_plan(user_id):
         release_connection(conn)
 
 
+# ============================================
 # ===== دوال Pomodoro =====
+# ============================================
+
 def save_pomodoro_session(user_id, subject, duration):
     conn = get_connection()
     cursor = conn.cursor()
@@ -1276,7 +1527,7 @@ def get_pomodoro_stats(user_id, days=7):
 
 
 # ============================================
-# ===== دوال PDF Analysis (جديد - v1.1) =====
+# ===== دوال PDF Analysis =====
 # ============================================
 
 def save_pdf_analysis(user_id, file_name, page_count, pdf_text, quick_summary, chapters_json):
@@ -1381,10 +1632,10 @@ def clear_pdf_analysis(user_id):
     finally:
         cursor.close()
         release_connection(conn)
-
+        
 
 # ============================================
-# ===== دوال V2 - Analytics (جديد - v2.0) =====
+# ===== دوال V2 - Analytics (Phase 0.5) =====
 # ============================================
 
 def log_event(user_id, event_type, metadata=None):
@@ -1495,10 +1746,389 @@ def count_events_today(event_type=None):
         release_connection(conn)
 
 
-# ===== دوال Quiz Attempts =====
+# ============================================
+# ===== دوال V2 - Concepts (Phase 1A) =====
+# ============================================
 
-def save_quiz_attempt(user_id, lecture_id, question_text, correct_answer, user_answer, is_correct, time_taken=None, difficulty=None, topic=None):
-    """بتحفظ إجابة طالب في الكويز"""
+def save_concept(source_id, name, description=None, importance=0.5, difficulty=0.5):
+    """بيحفظ مفهوم جديد"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        cursor.execute(
+            f"""INSERT INTO concepts 
+                (source_id, name, description, importance, difficulty, created_at)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
+            (source_id, name, description, importance, difficulty, now)
+        )
+        conn.commit()
+
+        # نرجع الـ id
+        cursor.execute(
+            f"SELECT id FROM concepts WHERE source_id = {ph} AND name = {ph} ORDER BY id DESC LIMIT 1",
+            (source_id, name)
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except Exception as e:
+        print(f"❌ خطأ في save_concept: {e}")
+        conn.rollback()
+        return None
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def get_concepts_by_source(source_id):
+    """بترجع كل مفاهيم ملف معين"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        cursor.execute(
+            f"""SELECT id, name, description, importance, difficulty
+                FROM concepts
+                WHERE source_id = {ph}
+                ORDER BY importance DESC""",
+            (source_id,)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        print(f"❌ خطأ في get_concepts_by_source: {e}")
+        return []
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def get_concept_by_id(concept_id):
+    """بترجع مفهوم بالـ ID"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        cursor.execute(
+            f"SELECT id, source_id, name, description, importance, difficulty FROM concepts WHERE id = {ph}",
+            (concept_id,)
+        )
+        return cursor.fetchone()
+    except Exception as e:
+        print(f"❌ خطأ في get_concept_by_id: {e}")
+        return None
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def save_concept_relationship(source_id, from_concept_id, to_concept_id, relationship_type, confidence=0.5):
+    """بيحفظ علاقة بين مفهومين"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        cursor.execute(
+            f"""INSERT INTO concept_relationships 
+                (source_id, from_concept_id, to_concept_id, relationship_type, confidence)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph})""",
+            (source_id, from_concept_id, to_concept_id, relationship_type, confidence)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"❌ خطأ في save_concept_relationship: {e}")
+        conn.rollback()
+        return False
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def get_concept_relationships(source_id):
+    """بترجع كل العلاقات لملف معين"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        cursor.execute(
+            f"""SELECT from_concept_id, to_concept_id, relationship_type, confidence
+                FROM concept_relationships
+                WHERE source_id = {ph}""",
+            (source_id,)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        print(f"❌ خطأ في get_concept_relationships: {e}")
+        return []
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+# ============================================
+# ===== دوال V2 - Questions (Phase 1A) =====
+# ============================================
+
+def save_question(source_id, concept_id, question_text, options, correct_answer,
+                  explanation=None, difficulty=None, difficulty_score=None,
+                  bloom_level=None, misconception_map=None):
+    """بيحفظ سؤال في بنك الأسئلة"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        import json
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        options_str = json.dumps(options, ensure_ascii=False) if options else None
+        misc_str = json.dumps(misconception_map, ensure_ascii=False) if misconception_map else None
+
+        cursor.execute(
+            f"""INSERT INTO questions 
+                (source_id, concept_id, question_text, options, correct_answer,
+                 explanation, difficulty, difficulty_score, bloom_level, 
+                 question_type, misconception_map, created_at)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
+            (source_id, concept_id, question_text, options_str, correct_answer,
+             explanation, difficulty, difficulty_score, bloom_level,
+             "mcq", misc_str, now)
+        )
+        conn.commit()
+
+        cursor.execute(
+            f"SELECT id FROM questions WHERE source_id = {ph} ORDER BY id DESC LIMIT 1",
+            (source_id,)
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except Exception as e:
+        print(f"❌ خطأ في save_question: {e}")
+        conn.rollback()
+        return None
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def get_questions_by_source(source_id, difficulty=None, limit=50):
+    """بترجع أسئلة ملف معين"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        if difficulty:
+            cursor.execute(
+                f"""SELECT id, concept_id, question_text, options, correct_answer,
+                           explanation, difficulty, difficulty_score, bloom_level, misconception_map
+                    FROM questions
+                    WHERE source_id = {ph} AND difficulty = {ph}
+                    ORDER BY difficulty_score ASC
+                    LIMIT {ph}""",
+                (source_id, difficulty, limit)
+            )
+        else:
+            cursor.execute(
+                f"""SELECT id, concept_id, question_text, options, correct_answer,
+                           explanation, difficulty, difficulty_score, bloom_level, misconception_map
+                    FROM questions
+                    WHERE source_id = {ph}
+                    ORDER BY difficulty_score ASC
+                    LIMIT {ph}""",
+                (source_id, limit)
+            )
+        return cursor.fetchall()
+    except Exception as e:
+        print(f"❌ خطأ في get_questions_by_source: {e}")
+        return []
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def get_question_by_id(question_id):
+    """بترجع سؤال بالـ ID"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        cursor.execute(
+            f"""SELECT id, source_id, concept_id, question_text, options, correct_answer,
+                       explanation, difficulty, difficulty_score, bloom_level, misconception_map
+                FROM questions WHERE id = {ph}""",
+            (question_id,)
+        )
+        return cursor.fetchone()
+    except Exception as e:
+        print(f"❌ خطأ في get_question_by_id: {e}")
+        return None
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def count_questions_by_source(source_id):
+    """بتحسب عدد الأسئلة لملف معين"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        cursor.execute(
+            f"SELECT COUNT(*) FROM questions WHERE source_id = {ph}",
+            (source_id,)
+        )
+        return cursor.fetchone()[0]
+    except Exception as e:
+        print(f"❌ خطأ في count_questions_by_source: {e}")
+        return 0
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+# ============================================
+# ===== دوال V2 - Quiz Sessions (Phase 1B) =====
+# ============================================
+
+def create_quiz_session(user_id, source_type, source_id, mode, difficulty, question_count):
+    """بينشئ جلسة كويز جديدة"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        cursor.execute(
+            f"""INSERT INTO quiz_sessions 
+                (user_id, source_type, source_id, mode, difficulty, question_count, 
+                 current_question, score, status, started_at)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
+            (user_id, source_type, source_id, mode, difficulty, question_count,
+             0, 0, "active", now)
+        )
+        conn.commit()
+
+        cursor.execute(
+            f"SELECT id FROM quiz_sessions WHERE user_id = {ph} ORDER BY id DESC LIMIT 1",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except Exception as e:
+        print(f"❌ خطأ في create_quiz_session: {e}")
+        conn.rollback()
+        return None
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def get_quiz_session(session_id):
+    """بترجع جلسة كويز بالـ ID"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        cursor.execute(
+            f"""SELECT id, user_id, source_type, source_id, mode, difficulty, 
+                       question_count, current_question, score, status, started_at, completed_at
+                FROM quiz_sessions WHERE id = {ph}""",
+            (session_id,)
+        )
+        return cursor.fetchone()
+    except Exception as e:
+        print(f"❌ خطأ في get_quiz_session: {e}")
+        return None
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def update_quiz_session(session_id, current_question=None, score=None, status=None):
+    """بتحدث جلسة كويز"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        updates = []
+        params = []
+
+        if current_question is not None:
+            updates.append(f"current_question = {ph}")
+            params.append(current_question)
+        if score is not None:
+            updates.append(f"score = {ph}")
+            params.append(score)
+        if status is not None:
+            updates.append(f"status = {ph}")
+            params.append(status)
+            if status == "completed":
+                updates.append(f"completed_at = {ph}")
+                params.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+        if not updates:
+            return False
+
+        params.append(session_id)
+        query = f"UPDATE quiz_sessions SET {', '.join(updates)} WHERE id = {ph}"
+
+        cursor.execute(query, tuple(params))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"❌ خطأ في update_quiz_session: {e}")
+        conn.rollback()
+        return False
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def get_user_quiz_sessions(user_id, limit=10):
+    """بترجع جلسات كويز المستخدم"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        cursor.execute(
+            f"""SELECT id, source_id, mode, difficulty, question_count, score, status, started_at, completed_at
+                FROM quiz_sessions
+                WHERE user_id = {ph}
+                ORDER BY id DESC
+                LIMIT {ph}""",
+            (user_id, limit)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        print(f"❌ خطأ في get_user_quiz_sessions: {e}")
+        return []
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+# ============================================
+# ===== دوال V2 - Quiz Attempts (Phase 1B) =====
+# ============================================
+
+def save_quiz_attempt(session_id, user_id, question_id, concept_id, question_text,
+                      correct_answer, user_answer, is_correct, response_time=None,
+                      attempt_number=1, misconception_detected=None):
+    """بتحفظ إجابة طالب"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -1508,18 +2138,50 @@ def save_quiz_attempt(user_id, lecture_id, question_text, correct_answer, user_a
 
         cursor.execute(
             f"""INSERT INTO quiz_attempts 
-                (user_id, lecture_id, question_text, correct_answer, user_answer, 
-                 is_correct, time_taken, difficulty, topic, timestamp)
-                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
-            (user_id, lecture_id, question_text, correct_answer, user_answer,
-             1 if is_correct else 0, time_taken, difficulty, topic, now)
+                (session_id, user_id, question_id, concept_id, question_text, 
+                 correct_answer, user_answer, is_correct, response_time, 
+                 attempt_number, misconception_detected, timestamp)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
+            (session_id, user_id, question_id, concept_id, question_text,
+             correct_answer, user_answer, 1 if is_correct else 0, response_time,
+             attempt_number, misconception_detected, now)
         )
         conn.commit()
-        return True
+
+        cursor.execute(
+            f"SELECT id FROM quiz_attempts WHERE session_id = {ph} ORDER BY id DESC LIMIT 1",
+            (session_id,)
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
     except Exception as e:
         print(f"❌ خطأ في save_quiz_attempt: {e}")
         conn.rollback()
-        return False
+        return None
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def get_session_attempts(session_id):
+    """بترجع كل إجابات جلسة معينة"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        cursor.execute(
+            f"""SELECT id, question_id, concept_id, question_text, user_answer, 
+                       is_correct, response_time, misconception_detected
+                FROM quiz_attempts
+                WHERE session_id = {ph}
+                ORDER BY id ASC""",
+            (session_id,)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        print(f"❌ خطأ في get_session_attempts: {e}")
+        return []
     finally:
         cursor.close()
         release_connection(conn)
@@ -1565,35 +2227,12 @@ def get_user_quiz_stats(user_id):
         release_connection(conn)
 
 
-def get_user_wrong_topics(user_id, limit=5):
-    """بترجع المواضيع اللي الطالب غلط فيها"""
-    conn = get_connection()
-    cursor = conn.cursor()
-    ph = placeholder()
+# ============================================
+# ===== دوال V2 - Knowledge States (Phase 1C) =====
+# ============================================
 
-    try:
-        cursor.execute(
-            f"""SELECT topic, COUNT(*) as wrong_count
-                FROM quiz_attempts
-                WHERE user_id = {ph} AND is_correct = 0 AND topic IS NOT NULL
-                GROUP BY topic
-                ORDER BY wrong_count DESC
-                LIMIT {ph}""",
-            (user_id, limit)
-        )
-        return cursor.fetchall()
-    except Exception as e:
-        print(f"❌ خطأ في get_user_wrong_topics: {e}")
-        return []
-    finally:
-        cursor.close()
-        release_connection(conn)
-
-
-# ===== دوال Knowledge States =====
-
-def update_knowledge_state(user_id, topic, is_correct):
-    """بتحدث حالة المعرفة للمستخدم في موضوع"""
+def update_knowledge_state(user_id, concept_id, concept_name, is_correct):
+    """بتحدث حالة المعرفة للطالب في مفهوم"""
     conn = get_connection()
     cursor = conn.cursor()
     ph = placeholder()
@@ -1604,41 +2243,48 @@ def update_knowledge_state(user_id, topic, is_correct):
         # جرب تحديث
         cursor.execute(
             f"""UPDATE knowledge_states
-                SET correct_count = correct_count + {ph},
-                    wrong_count = wrong_count + {ph},
+                SET attempts = attempts + 1,
+                    correct = correct + {ph},
+                    streak = CASE WHEN {ph} = 1 THEN streak + 1 ELSE 0 END,
+                    last_correct = {ph},
                     last_seen = {ph}
-                WHERE user_id = {ph} AND topic = {ph}""",
-            (1 if is_correct else 0, 0 if is_correct else 1, now, user_id, topic)
+                WHERE user_id = {ph} AND concept_id = {ph}""",
+            (1 if is_correct else 0, 1 if is_correct else 0,
+             1 if is_correct else 0, now, user_id, concept_id)
         )
 
         # لو مفيش، ضيف جديد
         if cursor.rowcount == 0:
             cursor.execute(
                 f"""INSERT INTO knowledge_states
-                    (user_id, topic, correct_count, wrong_count, last_seen)
-                    VALUES ({ph}, {ph}, {ph}, {ph}, {ph})""",
-                (user_id, topic, 1 if is_correct else 0, 0 if is_correct else 1, now)
+                    (user_id, concept_id, concept_name, attempts, correct, streak, last_correct, last_seen)
+                    VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
+                (user_id, concept_id, concept_name, 1,
+                 1 if is_correct else 0,
+                 1 if is_correct else 0,
+                 1 if is_correct else 0,
+                 now)
             )
 
-        # احسب mastery_level
+        # احسب mastery و confidence
         cursor.execute(
-            f"""SELECT correct_count, wrong_count FROM knowledge_states
-                WHERE user_id = {ph} AND topic = {ph}""",
-            (user_id, topic)
+            f"""SELECT attempts, correct FROM knowledge_states
+                WHERE user_id = {ph} AND concept_id = {ph}""",
+            (user_id, concept_id)
         )
         row = cursor.fetchone()
 
         if row:
-            correct = row[0] or 0
-            wrong = row[1] or 0
-            total = correct + wrong
-            mastery = int((correct / total * 100)) if total > 0 else 0
+            attempts = row[0] or 0
+            correct = row[1] or 0
+            mastery = correct / attempts if attempts > 0 else 0.0
+            confidence = min(1.0, attempts / 10.0)
 
             cursor.execute(
                 f"""UPDATE knowledge_states
-                    SET mastery_level = {ph}
-                    WHERE user_id = {ph} AND topic = {ph}""",
-                (mastery, user_id, topic)
+                    SET mastery = {ph}, confidence = {ph}
+                    WHERE user_id = {ph} AND concept_id = {ph}""",
+                (mastery, confidence, user_id, concept_id)
             )
 
         conn.commit()
@@ -1660,21 +2306,24 @@ def get_user_knowledge(user_id):
 
     try:
         cursor.execute(
-            f"""SELECT topic, correct_count, wrong_count, mastery_level, last_seen
+            f"""SELECT concept_id, concept_name, mastery, confidence, attempts, correct, streak, last_seen
                 FROM knowledge_states
                 WHERE user_id = {ph}
-                ORDER BY mastery_level ASC""",
+                ORDER BY mastery ASC""",
             (user_id,)
         )
         rows = cursor.fetchall()
 
         return [
             {
-                "topic": row[0],
-                "correct": row[1],
-                "wrong": row[2],
-                "mastery": row[3],
-                "last_seen": row[4],
+                "concept_id": row[0],
+                "concept_name": row[1],
+                "mastery": row[2],
+                "confidence": row[3],
+                "attempts": row[4],
+                "correct": row[5],
+                "streak": row[6],
+                "last_seen": row[7],
             }
             for row in rows
         ]
@@ -1686,7 +2335,7 @@ def get_user_knowledge(user_id):
         release_connection(conn)
 
 
-def get_user_weak_topics(user_id, threshold=50, limit=5):
+def get_user_weak_topics(user_id, threshold=0.5, limit=5):
     """بترجع أضعف المواضيع"""
     conn = get_connection()
     cursor = conn.cursor()
@@ -1694,10 +2343,10 @@ def get_user_weak_topics(user_id, threshold=50, limit=5):
 
     try:
         cursor.execute(
-            f"""SELECT topic, mastery_level, correct_count, wrong_count
+            f"""SELECT concept_id, concept_name, mastery, confidence, attempts
                 FROM knowledge_states
-                WHERE user_id = {ph} AND mastery_level < {ph}
-                ORDER BY mastery_level ASC
+                WHERE user_id = {ph} AND mastery < {ph}
+                ORDER BY mastery ASC
                 LIMIT {ph}""",
             (user_id, threshold, limit)
         )
@@ -1705,6 +2354,278 @@ def get_user_weak_topics(user_id, threshold=50, limit=5):
     except Exception as e:
         print(f"❌ خطأ في get_user_weak_topics: {e}")
         return []
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+# ============================================
+# ===== دوال V2 - Misconceptions (Phase 1C) =====
+# ============================================
+
+def save_misconception(user_id, concept_id, concept_name, misconception, confidence=0.5):
+    """بيحفظ خطأ مفاهيمي"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # شوف لو موجود
+        cursor.execute(
+            f"""SELECT id, evidence_count FROM misconceptions
+                WHERE user_id = {ph} AND concept_id = {ph} AND misconception = {ph}""",
+            (user_id, concept_id, misconception)
+        )
+        row = cursor.fetchone()
+
+        if row:
+            # زود evidence
+            new_count = (row[1] or 0) + 1
+            new_confidence = min(1.0, confidence * (1 + 0.2 * new_count))
+
+            cursor.execute(
+                f"""UPDATE misconceptions
+                    SET evidence_count = {ph}, confidence = {ph}, last_detected = {ph}
+                    WHERE id = {ph}""",
+                (new_count, new_confidence, now, row[0])
+            )
+        else:
+            # ضيف جديد
+            cursor.execute(
+                f"""INSERT INTO misconceptions
+                    (user_id, concept_id, concept_name, misconception, confidence,
+                     evidence_count, first_detected, last_detected)
+                    VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
+                (user_id, concept_id, concept_name, misconception,
+                 confidence, 1, now, now)
+            )
+
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"❌ خطأ في save_misconception: {e}")
+        conn.rollback()
+        return False
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def get_user_misconceptions(user_id, concept_id=None):
+    """بترجع الأخطاء المفاهيمية للمستخدم"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        if concept_id:
+            cursor.execute(
+                f"""SELECT id, concept_id, concept_name, misconception, confidence, evidence_count
+                    FROM misconceptions
+                    WHERE user_id = {ph} AND concept_id = {ph} AND resolved_at IS NULL
+                    ORDER BY confidence DESC""",
+                (user_id, concept_id)
+            )
+        else:
+            cursor.execute(
+                f"""SELECT id, concept_id, concept_name, misconception, confidence, evidence_count
+                    FROM misconceptions
+                    WHERE user_id = {ph} AND resolved_at IS NULL
+                    ORDER BY confidence DESC""",
+                (user_id,)
+            )
+        return cursor.fetchall()
+    except Exception as e:
+        print(f"❌ خطأ في get_user_misconceptions: {e}")
+        return []
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def resolve_misconception(misconception_id):
+    """بيعلّم الخطأ المفاهيمي إنه اتحل"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute(
+            f"UPDATE misconceptions SET resolved_at = {ph} WHERE id = {ph}",
+            (now, misconception_id)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"❌ خطأ في resolve_misconception: {e}")
+        conn.rollback()
+        return False
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+# ============================================
+# ===== دوال V2 - Mistake Reviews (Phase 1F) =====
+# ============================================
+
+def create_mistake_review(user_id, attempt_id, question_id, concept_id, concept_name,
+                           mistake_type=None, misconception_id=None):
+    """بينشئ مراجعة لغلطة"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        now = datetime.now()
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        next_review = (now + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+
+        cursor.execute(
+            f"""INSERT INTO mistake_reviews
+                (user_id, attempt_id, question_id, concept_id, concept_name,
+                 mistake_type, misconception_id, review_status, review_count,
+                 next_review_at, created_at)
+                VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})""",
+            (user_id, attempt_id, question_id, concept_id, concept_name,
+             mistake_type, misconception_id, "pending", 0, next_review, now_str)
+        )
+        conn.commit()
+
+        cursor.execute(
+            f"SELECT id FROM mistake_reviews WHERE user_id = {ph} ORDER BY id DESC LIMIT 1",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        return row[0] if row else None
+    except Exception as e:
+        print(f"❌ خطأ في create_mistake_review: {e}")
+        conn.rollback()
+        return None
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def get_due_mistake_reviews(user_id):
+    """بترجع الأخطاء اللي محتاجة مراجعة"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        cursor.execute(
+            f"""SELECT id, question_id, concept_id, concept_name, mistake_type,
+                       review_count, next_review_at
+                FROM mistake_reviews
+                WHERE user_id = {ph} 
+                  AND review_status = 'pending'
+                  AND next_review_at <= {ph}
+                ORDER BY next_review_at ASC""",
+            (user_id, now)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        print(f"❌ خطأ في get_due_mistake_reviews: {e}")
+        return []
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def get_all_mistake_reviews(user_id):
+    """بترجع كل مراجعات الأخطاء"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        cursor.execute(
+            f"""SELECT id, question_id, concept_id, concept_name, mistake_type,
+                       review_status, review_count, next_review_at, 
+                       successful_reviews, failed_reviews
+                FROM mistake_reviews
+                WHERE user_id = {ph}
+                ORDER BY next_review_at ASC""",
+            (user_id,)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        print(f"❌ خطأ في get_all_mistake_reviews: {e}")
+        return []
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def update_mistake_review(review_id, is_correct, new_interval_days):
+    """بتحدث مراجعة غلطة بعد إجابة"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        now = datetime.now()
+        now_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        next_review = (now + timedelta(days=new_interval_days)).strftime("%Y-%m-%d %H:%M:%S")
+
+        if is_correct:
+            cursor.execute(
+                f"""UPDATE mistake_reviews
+                    SET review_count = review_count + 1,
+                        successful_reviews = successful_reviews + 1,
+                        last_reviewed_at = {ph},
+                        next_review_at = {ph}
+                    WHERE id = {ph}""",
+                (now_str, next_review, review_id)
+            )
+        else:
+            cursor.execute(
+                f"""UPDATE mistake_reviews
+                    SET review_count = review_count + 1,
+                        failed_reviews = failed_reviews + 1,
+                        last_reviewed_at = {ph},
+                        next_review_at = {ph}
+                    WHERE id = {ph}""",
+                (now_str, next_review, review_id)
+            )
+
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"❌ خطأ في update_mistake_review: {e}")
+        conn.rollback()
+        return False
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def resolve_mistake_review(review_id):
+    """بيعلّم الغلطة إنها اتحلت"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute(
+            f"""UPDATE mistake_reviews
+                SET review_status = 'mastered', resolved_at = {ph}
+                WHERE id = {ph}""",
+            (now, review_id)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"❌ خطأ في resolve_mistake_review: {e}")
+        conn.rollback()
+        return False
     finally:
         cursor.close()
         release_connection(conn)
