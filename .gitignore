@@ -11,3 +11,4 @@ venv_ocr/
 venv/
 .venv/
 env/
+error.txt

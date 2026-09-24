@@ -4,11 +4,10 @@ import io
 import json
 import re
 import time
+import httpx
 from groq import Groq
 from dotenv import load_dotenv
 from pypdf import PdfReader
-import pymupdf
-import easyocr
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -24,7 +23,8 @@ if sys.platform == "win32":
 from config import (
     WELCOME_MESSAGE, ABOUT_MESSAGE, BOT_NAME, BOT_VERSION,
     DEVELOPER_NAME, DEVELOPER_USERNAME, ADMIN_IDS, BOT_USERNAME,
-    GROQ_MODEL, AI_MAX_TOKENS, AI_TEMPERATURE
+    GROQ_MODEL, AI_MAX_TOKENS, AI_TEMPERATURE,
+    MISTRAL_OCR_MODEL, MISTRAL_OCR_TIMEOUT
 )
 from database import (
     init_db, get_or_create_user, increment_usage,
@@ -67,16 +67,16 @@ load_dotenv()
 # Groq (للتحليل)
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Mistral (للـ OCR)
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
+MISTRAL_API_BASE = "https://api.mistral.ai/v1"
 
-# ===== EasyOCR (للـ OCR) =====
-print("⏳ جاري تحميل EasyOCR...")
-try:
-    easyocr_reader = easyocr.Reader(['ar', 'en'], gpu=False)
-    print("✅ EasyOCR جاهز!")
-except Exception as e:
-    print(f"❌ EasyOCR فشل: {e}")
-    easyocr_reader = None
+if MISTRAL_API_KEY:
+    print(f"✅ Mistral OCR configured with {MISTRAL_OCR_MODEL}")
+else:
+    print("⚠️ تحذير: MISTRAL_API_KEY مش موجود!")
+
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 print(f"✅ {BOT_NAME} v{BOT_VERSION}")
 print(f"🤖 Groq Text Model: {GROQ_MODEL}")
@@ -104,49 +104,111 @@ def ai_generate(prompt, use_groq=True, max_tokens=AI_MAX_TOKENS):
         return "❌ حصل خطأ مؤقت في الاتصال بالـ AI. حاول تاني بعد دقيقة."
 
 
-# ===== دالة EasyOCR =====
-def extract_text_with_easyocr(pdf_path, max_pages=10, dpi=150):
-    """بتستخدم EasyOCR لاستخراج النص من PDF (صور + نصوص)"""
-    if easyocr_reader is None:
-        print("❌ EasyOCR مش متاح")
+# ===== دالة Mistral OCR (REST API مباشرة) =====
+def extract_text_with_mistral_ocr(pdf_path):
+    """بتستخدم Mistral OCR REST API لاستخراج النص من PDF"""
+    if not MISTRAL_API_KEY:
+        print("❌ Mistral مش متاح (المفتاح مش موجود)")
         return ""
 
     try:
-        print(f"🔍 جاري تحويل {max_pages} صفحات لصور...")
-        doc = pymupdf.open(pdf_path)
-        total_pages = min(len(doc), max_pages)
+        print("🔍 جاري رفع الملف على Mistral...")
 
-        all_text = ""
-        for i in range(total_pages):
-            page = doc[i]
-            pix = page.get_pixmap(dpi=dpi)
-            img_path = f"temp_page_{i}.png"
-            pix.save(img_path)
+        headers = {
+            "Authorization": f"Bearer {MISTRAL_API_KEY}"
+        }
 
-            print(f"📖 معالجة الصفحة {i+1} من {total_pages}...")
-            result = easyocr_reader.readtext(img_path, detail=0, paragraph=True)
+        # ===== 1. ارفع الملف =====
+        with open(pdf_path, "rb") as f:
+            files = {
+                "file": (os.path.basename(pdf_path), f, "application/pdf")
+            }
+            data = {"purpose": "ocr"}
 
-            if result:
-                page_text = "\n".join(result)
-                all_text += f"\n--- صفحة {i+1} ---\n{page_text}\n"
+            with httpx.Client(timeout=MISTRAL_OCR_TIMEOUT) as client:
+                upload_response = client.post(
+                    f"{MISTRAL_API_BASE}/files",
+                    headers=headers,
+                    files=files,
+                    data=data,
+                )
 
-            try:
-                os.remove(img_path)
-            except:
-                pass
+        if upload_response.status_code != 200:
+            print(f"❌ فشل رفع الملف: {upload_response.status_code} — {upload_response.text}")
+            return ""
 
-        doc.close()
+        upload_data = upload_response.json()
+        file_id = upload_data.get("id")
+        print(f"✅ تم الرفع: {file_id}")
 
-        print(f"✅ EasyOCR: {len(all_text)} حرف من {total_pages} صفحة")
-        return all_text
+        # ===== 2. احصل على signed URL =====
+        with httpx.Client(timeout=MISTRAL_OCR_TIMEOUT) as client:
+            url_response = client.get(
+                f"{MISTRAL_API_BASE}/files/{file_id}/url",
+                headers=headers,
+            )
+
+        if url_response.status_code != 200:
+            print(f"❌ فشل الحصول على الرابط: {url_response.status_code}")
+            return ""
+
+        signed_url = url_response.json().get("url")
+        print(f"✅ تم الحصول على الرابط")
+
+        # ===== 3. استخدم OCR =====
+        print("📖 جاري استخراج النص...")
+        ocr_payload = {
+            "model": MISTRAL_OCR_MODEL,
+            "document": {
+                "type": "document_url",
+                "document_url": signed_url,
+            },
+        }
+
+        with httpx.Client(timeout=MISTRAL_OCR_TIMEOUT) as client:
+            ocr_response = client.post(
+                f"{MISTRAL_API_BASE}/ocr",
+                headers={
+                    "Authorization": f"Bearer {MISTRAL_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=ocr_payload,
+            )
+
+        if ocr_response.status_code != 200:
+            print(f"❌ OCR فشل: {ocr_response.status_code} — {ocr_response.text}")
+            return ""
+
+        ocr_data = ocr_response.json()
+        pages = ocr_data.get("pages", [])
+
+        # اجمع النص من كل الصفحات
+        full_text = ""
+        for i, page in enumerate(pages):
+            page_text = page.get("markdown", "")
+            full_text += f"\n--- صفحة {i + 1} ---\n{page_text}\n"
+
+        print(f"✅ Mistral OCR: {len(full_text)} حرف من {len(pages)} صفحة")
+
+        # ===== 4. امسح الملف من Mistral =====
+        try:
+            with httpx.Client(timeout=30) as client:
+                client.delete(
+                    f"{MISTRAL_API_BASE}/files/{file_id}",
+                    headers=headers,
+                )
+        except:
+            pass
+
+        return full_text
 
     except Exception as e:
-        print(f"❌ EasyOCR فشل: {e}")
+        print(f"❌ Mistral OCR فشل: {e}")
         return ""
 
 
 def process_pdf(file_path):
-    """بيحاول يقرا PDF بـ pypdf الأول، لو فشل → EasyOCR"""
+    """بيحاول يقرا PDF بـ pypdf الأول، لو فشل → Mistral OCR"""
     # المحاولة الأولى: pypdf (أسرع وأرخص)
     try:
         reader = PdfReader(file_path)
@@ -159,13 +221,13 @@ def process_pdf(file_path):
             print(f"✅ pypdf: {len(text)} حرف")
             return text
         else:
-            print(f"⚠️ pypdf رجع نص قصير ({len(text)} حرف) — بنجرب EasyOCR")
+            print(f"⚠️ pypdf رجع نص قصير ({len(text)} حرف) — بنجرب Mistral OCR")
     except Exception as e:
-        print(f"⚠️ pypdf فشل: {e} — بنجرب EasyOCR")
+        print(f"⚠️ pypdf فشل: {e} — بنجرب Mistral OCR")
 
-    # المحاولة التانية: EasyOCR
-    print("🔍 بنستخدم EasyOCR...")
-    return extract_text_with_easyocr(file_path)
+    # المحاولة التانية: Mistral OCR
+    print("🔍 بنستخدم Mistral OCR...")
+    return extract_text_with_mistral_ocr(file_path)
 
 
 # ===== دالة آمنة لتعديل الرسائل =====
@@ -2152,7 +2214,7 @@ def main():
     request = HTTPXRequest(
         connection_pool_size=8,
         connect_timeout=60.0,
-        read_timeout=300.0,  # زودنا الوقت (5 دقايق) للـ OCR
+        read_timeout=300.0,
         write_timeout=300.0,
     )
 
@@ -2181,7 +2243,7 @@ def main():
     print(f"✅ {BOT_NAME} v{BOT_VERSION} شغال!")
     print(f"👨‍💻 المطور: {DEVELOPER_NAME}")
     print(f"🤖 Groq Model: {GROQ_MODEL}")
-    print(f"🔍 EasyOCR: {'جاهز' if easyocr_reader else 'مش متاح'}")
+    print(f"🔍 Mistral OCR Model: {MISTRAL_OCR_MODEL}")
     print("اضغط Ctrl+C للإيقاف.")
     app.run_polling()
 
