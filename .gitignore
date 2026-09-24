@@ -7,3 +7,7 @@ report_*.pdf
 test_*.py
 bot_output.log
 *.log
+venv_ocr/
+venv/
+.venv/
+env/
