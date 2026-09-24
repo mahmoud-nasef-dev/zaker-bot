@@ -42,7 +42,11 @@ from database import (
     save_pomodoro_session, get_today_pomodoro_count,
     get_today_pomodoro_minutes, get_pomodoro_stats,
     save_pdf_analysis, get_pdf_analysis, has_pdf_analysis,
-    clear_pdf_analysis
+    clear_pdf_analysis,
+    # V2 Analytics
+    log_event, get_user_events, count_events_today,
+    save_quiz_attempt, get_user_quiz_stats, get_user_wrong_topics,
+    update_knowledge_state, get_user_knowledge, get_user_weak_topics,
 )
 from keyboards import (
     main_menu, pdf_menu, quiz_menu, explain_menu,
@@ -797,6 +801,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     get_or_create_user(user.id, user.username, user.first_name, invited_by)
 
+    # V2: سجل الحدث
+    log_event(user.id, "user_registered")
+
     if not has_subjects(user.id):
         await update.message.reply_text(
             f"أهلاً {user.first_name}! 👋\n\n"
@@ -827,7 +834,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     complete_onboarding(user.id)
     await send_welcome(update.message, user)
-
+    
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -1159,6 +1166,9 @@ async def handle_quick_summary(query, context, user):
         await safe_edit(query, summary, reply_markup=quick_actions_menu())
         increment_usage(user.id, POINTS_REWARDS["quick_summary"])
 
+        # V2: سجل الحدث
+        log_event(user.id, "summary_generated")
+
     except Exception as e:
         await safe_edit(query, f"❌ حصل خطأ: {str(e)}")
 
@@ -1221,7 +1231,7 @@ async def handle_full_explanation(query, context, user):
 
     except Exception as e:
         await safe_edit(query, f"❌ حصل خطأ: {str(e)}")
-
+        
 
 async def show_chapters_list(query, context, user):
     chapters = context.user_data.get("chapters", [])
@@ -1316,6 +1326,9 @@ async def handle_explain_chapter(query, context, user):
         await safe_edit(query, full_text, reply_markup=back_to_chapters_menu())
         increment_usage(user.id, POINTS_REWARDS["full_explanation"])
 
+        # V2: سجل الحدث
+        log_event(user.id, "explanation_generated", {"chapter": title})
+
     except Exception as e:
         await safe_edit(query, f"❌ حصل خطأ: {str(e)}")
 
@@ -1350,6 +1363,9 @@ async def handle_pdf_analysis(query, context, user, analysis_type):
             await query.message.reply_text(result[4000:], reply_markup=quick_actions_menu())
 
         increment_usage(user.id, POINTS_REWARDS["pdf_analysis"])
+
+        # V2: سجل الحدث
+        log_event(user.id, f"{analysis_type}_generated")
 
     except Exception as e:
         await safe_edit(query, f"❌ حصل خطأ: {str(e)}")
@@ -1410,6 +1426,12 @@ async def handle_pomodoro_buttons(update: Update, context: ContextTypes.DEFAULT_
         bonus_points = POINTS_REWARDS["pomodoro_4_sessions"] if today_count >= 4 else 0
 
         add_points(user.id, points_earned + bonus_points)
+
+        # V2: سجل الحدث
+        log_event(user.id, "pomodoro_completed", {
+            "subject": subject,
+            "duration": duration,
+        })
 
         text = (
             f"🎉 *عاش!*\n\n"
@@ -1903,6 +1925,9 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     document = update.message.document
 
     get_or_create_user(user.id, user.username, user.first_name)
+
+    # V2: سجل الحدث
+    log_event(user.id, "pdf_uploaded", {"file_name": document.file_name})
 
     allowed, remaining = check_limit(user.id)
     if not allowed:
