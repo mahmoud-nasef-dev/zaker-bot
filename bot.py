@@ -43,10 +43,14 @@ from database import (
     get_today_pomodoro_minutes, get_pomodoro_stats,
     save_pdf_analysis, get_pdf_analysis, has_pdf_analysis,
     clear_pdf_analysis,
-    # V2 Analytics
     log_event, get_user_events, count_events_today,
-    save_quiz_attempt, get_user_quiz_stats, get_user_wrong_topics,
+    get_questions_by_source, get_question_by_id, count_questions_by_source,
+    get_concept_by_id,
+    create_quiz_session, get_quiz_session, update_quiz_session,
+    save_quiz_attempt, get_session_attempts, get_user_quiz_stats,
     update_knowledge_state, get_user_knowledge, get_user_weak_topics,
+    save_misconception, get_user_misconceptions, resolve_misconception,
+    create_mistake_review, get_due_mistake_reviews, update_mistake_review,
 )
 from keyboards import (
     main_menu, pdf_menu, quiz_menu, explain_menu,
@@ -62,16 +66,21 @@ from keyboards import (
     pomodoro_start_menu, pomodoro_duration_menu,
     pomodoro_subjects_menu, pomodoro_active_menu, pomodoro_done_menu,
     quick_actions_menu, chapters_menu, chapter_nav_menu,
-    chapter_options_menu, back_to_chapters_menu
+    chapter_options_menu, back_to_chapters_menu,
+    smart_quiz_menu, quiz_count_menu, quiz_difficulty_menu,
+    quiz_question_menu, quiz_after_answer_menu, quiz_result_menu,
+    quiz_mistake_explanation_menu, quiz_no_source_menu, quiz_processing_menu,
+)
+from quiz_generator import (
+    generate_question_bank, get_source_id_from_file,
+    check_question_bank_exists,
 )
 
 # ===== الإعدادات =====
 load_dotenv()
 
-# Groq (للتحليل)
 groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-# Mistral (للـ OCR)
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 MISTRAL_API_BASE = "https://api.mistral.ai/v1"
 
@@ -108,7 +117,7 @@ def ai_generate(prompt, use_groq=True, max_tokens=AI_MAX_TOKENS):
         return "❌ حصل خطأ مؤقت في الاتصال بالـ AI. حاول تاني بعد دقيقة."
 
 
-# ===== دالة Mistral OCR (REST API مباشرة) =====
+# ===== دالة Mistral OCR =====
 def extract_text_with_mistral_ocr(pdf_path):
     """بتستخدم Mistral OCR REST API لاستخراج النص من PDF"""
     if not MISTRAL_API_KEY:
@@ -122,7 +131,6 @@ def extract_text_with_mistral_ocr(pdf_path):
             "Authorization": f"Bearer {MISTRAL_API_KEY}"
         }
 
-        # ===== 1. ارفع الملف =====
         with open(pdf_path, "rb") as f:
             files = {
                 "file": (os.path.basename(pdf_path), f, "application/pdf")
@@ -145,7 +153,6 @@ def extract_text_with_mistral_ocr(pdf_path):
         file_id = upload_data.get("id")
         print(f"✅ تم الرفع: {file_id}")
 
-        # ===== 2. احصل على signed URL =====
         with httpx.Client(timeout=MISTRAL_OCR_TIMEOUT) as client:
             url_response = client.get(
                 f"{MISTRAL_API_BASE}/files/{file_id}/url",
@@ -159,7 +166,6 @@ def extract_text_with_mistral_ocr(pdf_path):
         signed_url = url_response.json().get("url")
         print(f"✅ تم الحصول على الرابط")
 
-        # ===== 3. استخدم OCR =====
         print("📖 جاري استخراج النص...")
         ocr_payload = {
             "model": MISTRAL_OCR_MODEL,
@@ -186,7 +192,6 @@ def extract_text_with_mistral_ocr(pdf_path):
         ocr_data = ocr_response.json()
         pages = ocr_data.get("pages", [])
 
-        # اجمع النص من كل الصفحات
         full_text = ""
         for i, page in enumerate(pages):
             page_text = page.get("markdown", "")
@@ -194,7 +199,6 @@ def extract_text_with_mistral_ocr(pdf_path):
 
         print(f"✅ Mistral OCR: {len(full_text)} حرف من {len(pages)} صفحة")
 
-        # ===== 4. امسح الملف من Mistral =====
         try:
             with httpx.Client(timeout=30) as client:
                 client.delete(
@@ -213,7 +217,6 @@ def extract_text_with_mistral_ocr(pdf_path):
 
 def process_pdf(file_path):
     """بيحاول يقرا PDF بـ pypdf الأول، لو فشل → Mistral OCR"""
-    # المحاولة الأولى: pypdf (أسرع وأرخص)
     try:
         reader = PdfReader(file_path)
         text = ""
@@ -229,7 +232,6 @@ def process_pdf(file_path):
     except Exception as e:
         print(f"⚠️ pypdf فشل: {e} — بنجرب Mistral OCR")
 
-    # المحاولة التانية: Mistral OCR
     print("🔍 بنستخدم Mistral OCR...")
     return extract_text_with_mistral_ocr(file_path)
 
@@ -287,7 +289,6 @@ def clean_text(text):
     return "\n".join(cleaned_lines)
 
 
-# ===== دالة تقسيم النص =====
 def chunk_pdf_text(pdf_text, chunk_size=6000):
     """بتقسم النص لأجزاء"""
     chunks = []
@@ -354,23 +355,6 @@ def analyze_pdf_content(text, analysis_type="summary", user_subjects=None, user_
 **🔤 المصطلح:**
 📖 المعنى بالعربي
 💡 مثال""",
-
-        "quiz": f"""{base_prompt}
-
-📄 المحتوى:
-{text}
-
-━━━━━━━━━━━━━━━
-
-اعملي 5 أسئلة اختيارات:
-
-**السؤال 1:**
-السؤال؟
-أ) خيار 1
-ب) خيار 2
-ج) خيار 3
-د) خيار 4
-✅ الإجابة: (أ/ب/ج/د)""",
 
         "examples": f"""{base_prompt}
 
@@ -786,7 +770,10 @@ async def send_welcome(update_or_message, user, is_edit=False):
         )
 
 
+# ============================================
 # ===== الأوامر =====
+# ============================================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
@@ -801,7 +788,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     get_or_create_user(user.id, user.username, user.first_name, invited_by)
 
-    # V2: سجل الحدث
     log_event(user.id, "user_registered")
 
     if not has_subjects(user.id):
@@ -834,7 +820,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     complete_onboarding(user.id)
     await send_welcome(update.message, user)
-    
+
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
@@ -1166,7 +1152,6 @@ async def handle_quick_summary(query, context, user):
         await safe_edit(query, summary, reply_markup=quick_actions_menu())
         increment_usage(user.id, POINTS_REWARDS["quick_summary"])
 
-        # V2: سجل الحدث
         log_event(user.id, "summary_generated")
 
     except Exception as e:
@@ -1231,7 +1216,7 @@ async def handle_full_explanation(query, context, user):
 
     except Exception as e:
         await safe_edit(query, f"❌ حصل خطأ: {str(e)}")
-        
+
 
 async def show_chapters_list(query, context, user):
     chapters = context.user_data.get("chapters", [])
@@ -1326,7 +1311,6 @@ async def handle_explain_chapter(query, context, user):
         await safe_edit(query, full_text, reply_markup=back_to_chapters_menu())
         increment_usage(user.id, POINTS_REWARDS["full_explanation"])
 
-        # V2: سجل الحدث
         log_event(user.id, "explanation_generated", {"chapter": title})
 
     except Exception as e:
@@ -1364,7 +1348,6 @@ async def handle_pdf_analysis(query, context, user, analysis_type):
 
         increment_usage(user.id, POINTS_REWARDS["pdf_analysis"])
 
-        # V2: سجل الحدث
         log_event(user.id, f"{analysis_type}_generated")
 
     except Exception as e:
@@ -1427,7 +1410,6 @@ async def handle_pomodoro_buttons(update: Update, context: ContextTypes.DEFAULT_
 
         add_points(user.id, points_earned + bonus_points)
 
-        # V2: سجل الحدث
         log_event(user.id, "pomodoro_completed", {
             "subject": subject,
             "duration": duration,
@@ -1801,6 +1783,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit(query, "📢 *بث رسالة*\n\n_قريب إن شاء الله_ 🚧", reply_markup=admin_panel_menu())
         return
 
+    # لو مفيش أي حالة، نرجع للـ Quiz handler
+    await handle_smart_quiz_buttons(update, context)
+
 
 # ===== عرض الأسئلة =====
 async def show_next_question(query, context, step):
@@ -1926,7 +1911,6 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     get_or_create_user(user.id, user.username, user.first_name)
 
-    # V2: سجل الحدث
     log_event(user.id, "pdf_uploaded", {"file_name": document.file_name})
 
     allowed, remaining = check_limit(user.id)
@@ -1965,6 +1949,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["pdf_text"] = pdf_text
         context.user_data["pdf_file_name"] = document.file_name
         context.user_data["pdf_page_count"] = len(pdf_text.split("\n")) // 40
+        context.user_data["pdf_source_id"] = get_source_id_from_file(document.file_name, user.id)
 
         clear_pdf_analysis(user.id)
         context.user_data.pop("chapters", None)
@@ -1986,6 +1971,505 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await waiting.edit_text(f"❌ حصل خطأ: {str(e)}")
         if os.path.exists(pdf_path):
             os.remove(pdf_path)
+
+
+# ============================================
+# ===== V2 Quiz Engine =====
+# ============================================
+
+async def handle_smart_quiz_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالج أزرار الكويز الذكي (V2)"""
+    query = update.callback_query
+    data = query.data
+    user = query.from_user
+
+    # ===== بداية الكويز =====
+    if data == "smart_quiz_lecture":
+        await query.answer()
+
+        source_id = context.user_data.get("pdf_source_id")
+        if not source_id:
+            await safe_edit(
+                query,
+                "⚠️ *مفيش محاضرة محفوظة*\n\n"
+                "ارفع PDF الأول عشان نقدر نعمل كويز عليه.",
+                reply_markup=quiz_no_source_menu()
+            )
+            return
+
+        # نتأكد من بنك الأسئلة
+        if not check_question_bank_exists(source_id):
+            await safe_edit(
+                query,
+                "🔄 *جاري تجهيز بنك الأسئلة...*\n\n"
+                "_دي أول مرة نعمل كويز على المحاضرة دي، ممكن ياخد دقيقة._",
+                reply_markup=quiz_processing_menu()
+            )
+
+            pdf_text = context.user_data.get("pdf_text", "")
+            if not pdf_text:
+                analysis = get_pdf_analysis(user.id)
+                if analysis:
+                    pdf_text = analysis["pdf_text"]
+
+            if not pdf_text:
+                await safe_edit(query, "❌ الملف مش موجود، ارفعه تاني.")
+                return
+
+            result = generate_question_bank(
+                pdf_text=pdf_text,
+                source_id=source_id,
+                max_concepts=8,
+                questions_per_concept=3,
+            )
+
+            if not result["success"]:
+                await safe_edit(query, "❌ مقدرناش نجهز بنك الأسئلة، جرب تاني.")
+                return
+
+            log_event(user.id, "question_bank_generated", {
+                "source_id": source_id,
+                "concepts": result["concepts_count"],
+                "questions": result["questions_count"],
+            })
+
+        # اختار العدد
+        context.user_data["quiz_mode"] = "lecture"
+        context.user_data["quiz_source_id"] = source_id
+
+        await safe_edit(
+            query,
+            "🎯 *كويز على المحاضرة*\n\n"
+            "━━━━━━━━━━━━━━━\n\n"
+            "عايز كام سؤال؟",
+            reply_markup=quiz_count_menu("lecture")
+        )
+        return
+
+    if data == "smart_quiz_weak":
+        await query.answer()
+
+        weak_topics = get_user_weak_topics(user.id, threshold=0.5, limit=5)
+        if not weak_topics:
+            await safe_edit(
+                query,
+                "🎯 *نقاط ضعفك*\n\n"
+                "لسه معندناش بيانات كفاية.\n"
+                "اعمل كويزات الأول عشان نعرف نقاط ضعفك.",
+                reply_markup=smart_quiz_menu()
+            )
+            return
+
+        text = "🎯 *نقاط ضعفك*\n\n━━━━━━━━━━━━━━━\n\n"
+        for concept_id, concept_name, mastery, confidence, attempts in weak_topics:
+            mastery_pct = int(mastery * 100) if mastery else 0
+            text += f"🔴 *{concept_name}* — {mastery_pct}%\n"
+
+        text += "\n━━━━━━━━━━━━━━━\n\n"
+        text += "🎯 _قريب: كويز مخصص على نقاط ضعفك_"
+
+        await safe_edit(query, text, reply_markup=smart_quiz_menu())
+        return
+
+    if data == "smart_quiz_mistakes":
+        await query.answer()
+
+        due = get_due_mistake_reviews(user.id)
+        if not due:
+            await safe_edit(
+                query,
+                "❌ *مراجعة أخطائي*\n\n"
+                "مفيش أخطاء محتاجة مراجعة دلوقتي.\n"
+                "🎉 _عاش! كل حاجة تحت السيطرة._",
+                reply_markup=smart_quiz_menu()
+            )
+            return
+
+        text = f"❌ *أخطاء محتاجة مراجعة*\n\n━━━━━━━━━━━━━━━\n\n"
+        for review_id, question_id, concept_id, concept_name, mistake_type, review_count, next_review_at in due[:5]:
+            text += f"📌 *{concept_name or 'مفهوم'}*\n"
+            text += f"   عدد المراجعات: {review_count}\n\n"
+
+        text += "\n━━━━━━━━━━━━━━━\n\n"
+        text += "🎯 _قريب: مراجعة تفاعلية للأخطاء_"
+
+        await safe_edit(query, text, reply_markup=smart_quiz_menu())
+        return
+
+    if data == "smart_quiz_daily":
+        await query.answer("🎲 الكويز اليومي — قريب إن شاء الله 🚧")
+        return
+
+    if data == "smart_quiz_back":
+        await query.answer()
+        await safe_edit(
+            query,
+            "🎯 *الكويز الذكي*\n\n━━━━━━━━━━━━━━━\n\nاختار نوع الكويز:",
+            reply_markup=smart_quiz_menu()
+        )
+        return
+
+    if data == "smart_quiz_restart":
+        await query.answer()
+        await safe_edit(
+            query,
+            "🎯 *الكويز الذكي*\n\n━━━━━━━━━━━━━━━\n\nاختار نوع الكويز:",
+            reply_markup=smart_quiz_menu()
+        )
+        return
+
+    # ===== اختيار العدد =====
+    if data.startswith("quiz_count_"):
+        await query.answer()
+        parts = data.replace("quiz_count_", "").split("_", 1)
+        count = int(parts[0])
+        mode = parts[1] if len(parts) > 1 else "lecture"
+
+        context.user_data["quiz_count"] = count
+        context.user_data["quiz_mode"] = mode
+
+        await safe_edit(
+            query,
+            f"📊 *عدد الأسئلة:* {count}\n\n"
+            "━━━━━━━━━━━━━━━\n\n"
+            "🎚️ *اختار مستوى الصعوبة:*",
+            reply_markup=quiz_difficulty_menu(count, mode)
+        )
+        return
+
+    # ===== اختيار الصعوبة → بدء الجلسة =====
+    if data.startswith("quiz_diff_"):
+        await query.answer()
+        parts = data.replace("quiz_diff_", "").split("_")
+        difficulty = parts[0]
+        count = int(parts[1])
+        mode = parts[2] if len(parts) > 2 else "lecture"
+
+        source_id = context.user_data.get("quiz_source_id")
+        if not source_id:
+            await safe_edit(query, "❌ حصل خطأ، جرب من الأول.")
+            return
+
+        questions = get_questions_by_source(source_id, limit=50)
+        if not questions:
+            await safe_edit(query, "❌ مفيش أسئلة في بنك الأسئلة.")
+            return
+
+        if difficulty != "adaptive":
+            questions = [q for q in questions if q[6] == difficulty]
+
+        if len(questions) < count:
+            count = len(questions)
+
+        if count == 0:
+            await safe_edit(query, f"❌ مفيش أسئلة بمستوى {difficulty}.")
+            return
+
+        questions = questions[:count]
+
+        session_id = create_quiz_session(
+            user_id=user.id,
+            source_type="document",
+            source_id=source_id,
+            mode=mode,
+            difficulty=difficulty,
+            question_count=count,
+        )
+
+        if not session_id:
+            await safe_edit(query, "❌ مقدرناش نعمل الجلسة.")
+            return
+
+        context.user_data["quiz_session_id"] = session_id
+        context.user_data["quiz_questions"] = questions
+        context.user_data["quiz_current_idx"] = 0
+        context.user_data["quiz_score"] = 0
+        context.user_data["quiz_started_at"] = time.time()
+
+        log_event(user.id, "quiz_started", {
+            "session_id": session_id,
+            "mode": mode,
+            "difficulty": difficulty,
+            "count": count,
+        })
+
+        await show_quiz_question(query, context, user)
+        return
+
+    # ===== الإجابة على سؤال =====
+    if data.startswith("quiz_ans_"):
+        await query.answer()
+        answer = data.replace("quiz_ans_", "")
+        await process_quiz_answer(query, context, user, answer)
+        return
+
+    if data == "quiz_skip":
+        await query.answer()
+        await process_quiz_answer(query, context, user, None)
+        return
+
+    if data == "quiz_next_question":
+        await query.answer()
+        await show_quiz_question(query, context, user)
+        return
+
+    if data == "quiz_finish":
+        await query.answer()
+        await finish_quiz_session(query, context, user)
+        return
+
+    if data == "quiz_cancel":
+        await query.answer()
+        session_id = context.user_data.get("quiz_session_id")
+        if session_id:
+            update_quiz_session(session_id, status="abandoned")
+        context.user_data.pop("quiz_session_id", None)
+        await safe_edit(query, "❌ تم إلغاء الكويز.")
+        return
+
+    if data == "quiz_explain_mistake":
+        await query.answer()
+        await safe_edit(
+            query,
+            "💡 *شرح الغلطة*\n\n"
+            "_قريب إن شاء الله — هيعرضلك إيه اللي فاتك بالظبط._",
+            reply_markup=quiz_mistake_explanation_menu(
+                context.user_data.get("quiz_current_idx", 0) + 1
+            )
+        )
+        return
+
+    if data == "quiz_explain_weak":
+        await query.answer()
+        await safe_edit(
+            query,
+            "📚 *شرح نقاط الضعف*\n\n_قريب إن شاء الله_ 🚧",
+            reply_markup=quiz_result_menu()
+        )
+        return
+
+    # لو مفيش حالة، نرجع للـ button_handler
+    await button_handler(update, context)
+
+
+async def show_quiz_question(query, context, user):
+    """بيعرض السؤال الحالي"""
+    questions = context.user_data.get("quiz_questions", [])
+    idx = context.user_data.get("quiz_current_idx", 0)
+
+    if idx >= len(questions):
+        await finish_quiz_session(query, context, user)
+        return
+
+    q = questions[idx]
+
+    # q = (id, concept_id, question_text, options, correct_answer, explanation, difficulty, difficulty_score, bloom_level, misconception_map)
+    question_id = q[0]
+    question_text = q[2]
+    options = q[3]
+    difficulty = q[6]
+
+    try:
+        options_dict = json.loads(options) if isinstance(options, str) else options
+    except:
+        options_dict = {}
+
+    if not isinstance(options_dict, dict) or len(options_dict) < 4:
+        context.user_data["quiz_current_idx"] = idx + 1
+        await show_quiz_question(query, context, user)
+        return
+
+    difficulty_emoji = {
+        "easy": "🟢",
+        "medium": "🟡",
+        "hard": "🔴",
+    }.get(difficulty, "🟡")
+
+    text = (
+        f"📝 *السؤال {idx + 1} من {len(questions)}*\n"
+        f"{difficulty_emoji} _{difficulty}_\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"*{question_text}*\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+    )
+
+    for key in ["A", "B", "C", "D"]:
+        if key in options_dict:
+            text += f"*{key}.* {options_dict[key]}\n"
+
+    context.user_data["quiz_question_start"] = time.time()
+
+    await safe_edit(
+        query,
+        text,
+        reply_markup=quiz_question_menu(idx + 1, len(questions))
+    )
+
+
+async def process_quiz_answer(query, context, user, answer):
+    """بيعالج الإجابة"""
+    questions = context.user_data.get("quiz_questions", [])
+    idx = context.user_data.get("quiz_current_idx", 0)
+
+    if idx >= len(questions):
+        await finish_quiz_session(query, context, user)
+        return
+
+    q = questions[idx]
+    question_id = q[0]
+    concept_id = q[1]
+    question_text = q[2]
+    options = q[3]
+    correct_answer = q[4]
+    explanation = q[5]
+    difficulty = q[6]
+
+    start_time = context.user_data.get("quiz_question_start", time.time())
+    response_time = int(time.time() - start_time)
+
+    misconception_map = q[9]
+    try:
+        misconception_dict = json.loads(misconception_map) if isinstance(misconception_map, str) else misconception_map
+    except:
+        misconception_dict = {}
+
+    is_correct = (answer == correct_answer)
+    session_id = context.user_data.get("quiz_session_id")
+
+    concept_name = ""
+    try:
+        c = get_concept_by_id(concept_id)
+        if c:
+            concept_name = c[2]
+    except:
+        pass
+
+    misconception_detected = None
+    if not is_correct and answer and answer in misconception_dict:
+        misconception_detected = misconception_dict[answer]
+
+    save_quiz_attempt(
+        session_id=session_id,
+        user_id=user.id,
+        question_id=question_id,
+        concept_id=concept_id,
+        question_text=question_text,
+        correct_answer=correct_answer,
+        user_answer=answer or "SKIP",
+        is_correct=is_correct,
+        response_time=response_time,
+        attempt_number=1,
+        misconception_detected=misconception_detected,
+    )
+
+    if concept_id and concept_name:
+        update_knowledge_state(user.id, concept_id, concept_name, is_correct)
+
+    if not is_correct and misconception_detected and concept_id:
+        save_misconception(
+            user_id=user.id,
+            concept_id=concept_id,
+            concept_name=concept_name,
+            misconception=misconception_detected,
+            confidence=0.7,
+        )
+
+    if is_correct:
+        context.user_data["quiz_score"] = context.user_data.get("quiz_score", 0) + 1
+
+    if is_correct:
+        feedback = "✅ *صح!*\n\n"
+        if explanation:
+            feedback += f"💡 _{explanation}_\n\n"
+    else:
+        feedback = f"❌ *غلط!*\n\n"
+        feedback += f"✅ *الإجابة الصح:* *{correct_answer}*\n\n"
+        if explanation:
+            feedback += f"💡 _{explanation}_\n\n"
+        if misconception_detected:
+            feedback += f"🧠 *فهمت غلط:* _{misconception_detected}_\n\n"
+
+    feedback += "━━━━━━━━━━━━━━━"
+
+    await query.answer("✅" if is_correct else "❌")
+
+    context.user_data["quiz_current_idx"] = idx + 1
+
+    await safe_edit(
+        query,
+        feedback,
+        reply_markup=quiz_after_answer_menu(is_correct, has_misconception=bool(misconception_detected))
+    )
+
+    log_event(user.id, "quiz_answered", {
+        "session_id": session_id,
+        "question_id": question_id,
+        "is_correct": is_correct,
+    })
+
+
+async def finish_quiz_session(query, context, user):
+    """بينهي الجلسة ويعرض النتيجة"""
+    questions = context.user_data.get("quiz_questions", [])
+    score = context.user_data.get("quiz_score", 0)
+    total = len(questions)
+    session_id = context.user_data.get("quiz_session_id")
+
+    if session_id:
+        update_quiz_session(
+            session_id,
+            current_question=total,
+            score=score,
+            status="completed",
+        )
+
+    accuracy = (score / total * 100) if total > 0 else 0
+
+    points_earned = 0
+    if total > 0:
+        points_earned = POINTS_REWARDS["quiz_complete"]
+        if score == total:
+            points_earned += POINTS_REWARDS["quiz_perfect"]
+        add_points(user.id, points_earned)
+        increment_usage(user.id, 0)
+
+    text = (
+        f"🎉 *خلصت الكويز!*\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"📊 *النتيجة:*\n"
+        f"✅ صح: *{score}*\n"
+        f"❌ غلط: *{total - score}*\n"
+        f"🎯 الدقة: *{accuracy:.0f}%*\n\n"
+    )
+
+    if accuracy >= 90:
+        text += "🏆 *ممتاز! إنت جاهز.*\n\n"
+    elif accuracy >= 70:
+        text += "👍 *جيد! محتاج شوية مراجعة.*\n\n"
+    elif accuracy >= 50:
+        text += "📚 *محتاج مراجعة أكتر.*\n\n"
+    else:
+        text += "💪 *محتاج تذاكر تاني، متستسلمش!*\n\n"
+
+    if points_earned > 0:
+        text += f"💎 *كسبت {points_earned} نقطة!*\n\n"
+
+    text += "━━━━━━━━━━━━━━━"
+
+    log_event(user.id, "quiz_completed", {
+        "session_id": session_id,
+        "score": score,
+        "total": total,
+        "accuracy": accuracy,
+    })
+
+    context.user_data.pop("quiz_questions", None)
+    context.user_data.pop("quiz_current_idx", None)
+    context.user_data.pop("quiz_score", None)
+    context.user_data.pop("quiz_session_id", None)
+    context.user_data.pop("quiz_started_at", None)
+
+    await safe_edit(query, text, reply_markup=quiz_result_menu())
 
 
 # ===== معالجة الرسائل النصية =====
@@ -2145,12 +2629,13 @@ async def handle_reply_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("📄 *ارفع ملف PDF*\n\nابعتلي الملف.")
         return
 
-    if text == "📸 صورة":
-        await update.message.reply_text("📸 *قريب إن شاء الله* 🚧")
-        return
-
-    if text == "🎯 كويز":
-        await update.message.reply_text("🎯 *اختار:*", reply_markup=quiz_menu())
+    if text == "🎯 كويز ذكي":
+        await update.message.reply_text(
+            "🎯 *الكويز الذكي*\n\n"
+            "━━━━━━━━━━━━━━━\n\n"
+            "اختار نوع الكويز:",
+            reply_markup=smart_quiz_menu()
+        )
         return
 
     if text == "📚 شرح":
@@ -2260,6 +2745,7 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_pdf_buttons, pattern="^(pdf_|quick_|full_|ask_pdf|download_|show_chapters|chapter_|explain_|quiz_this)"))
     app.add_handler(CallbackQueryHandler(handle_pomodoro_buttons, pattern="^pomodoro_|^start_pomodoro"))
     app.add_handler(CallbackQueryHandler(handle_plan_buttons, pattern="^(show_weekly_plan|show_today_plan|regenerate_plan)$"))
+    app.add_handler(CallbackQueryHandler(handle_smart_quiz_buttons, pattern="^(smart_quiz_|quiz_)"))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))

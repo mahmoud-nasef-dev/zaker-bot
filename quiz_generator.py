@@ -11,7 +11,12 @@ from datetime import datetime
 from groq import Groq
 from dotenv import load_dotenv
 
-from config import GROQ_MODEL, AI_MAX_TOKENS, AI_TEMPERATURE
+from config import (
+    GROQ_MODEL, AI_MAX_TOKENS, AI_TEMPERATURE,
+    QUIZ_MAX_CONCEPTS, QUIZ_QUESTIONS_PER_CONCEPT,
+    QUIZ_MIN_QUESTION_LENGTH, QUIZ_MAX_QUESTION_LENGTH,
+    QUIZ_MIN_OPTIONS, QUIZ_MAX_OPTIONS, QUIZ_MIN_EXPLANATION_LENGTH,
+)
 from database import (
     save_concept, get_concepts_by_source,
     save_concept_relationship,
@@ -62,31 +67,55 @@ def ai_generate(prompt, max_tokens=AI_MAX_TOKENS, json_mode=False):
 # ============================================
 
 def extract_json(text):
-    """بتستخرج JSON من نص"""
+    """بتستخرج JSON من نص مع محاولات إصلاح ذكية"""
     if not text:
         return None
 
     text = text.strip()
     text = text.replace("```json", "").replace("```", "").strip()
 
+    # ===== المحاولة 1: الطريقة العادية =====
     start = text.find("{")
     end = text.rfind("}") + 1
 
-    if start < 0 or end <= start:
-        return None
+    if start >= 0 and end > start:
+        try:
+            return json.loads(text[start:end])
+        except Exception as e:
+            print(f"⚠️ المحاولة 1 فشلت: {e}")
 
-    try:
-        return json.loads(text[start:end])
-    except Exception as e:
-        print(f"⚠️ فشل قراءة JSON: {e}")
-        return None
+    # ===== المحاولة 2: إصلاح الفواصل الزيادة =====
+    if start >= 0 and end > start:
+        try:
+            cleaned = text[start:end]
+            # شيل الفاصلة اللي قبل } أو ]
+            cleaned = re.sub(r',\s*([}\]])', r'\1', cleaned)
+            return json.loads(cleaned)
+        except Exception as e:
+            print(f"⚠️ المحاولة 2 فشلت: {e}")
+
+    # ===== المحاولة 3: إصلاح الأقواس الناقصة =====
+    # لو Groq نسي يحط { } حوالين سؤال
+    if start >= 0:
+        try:
+            cleaned = text[start:end] if end > start else text[start:]
+            # حاول تقفل الأقواس الناقصة
+            open_braces = cleaned.count("{") - cleaned.count("}")
+            open_brackets = cleaned.count("[") - cleaned.count("]")
+            cleaned += "]" * open_brackets + "}" * open_braces
+            return json.loads(cleaned)
+        except Exception as e:
+            print(f"⚠️ المحاولة 3 فشلت: {e}")
+
+    print("❌ كل محاولات إصلاح JSON فشلت")
+    return None
 
 
 # ============================================
 #   1. analyze_content — استخراج المفاهيم
 # ============================================
 
-def analyze_content(pdf_text, source_id, max_concepts=15):
+def analyze_content(pdf_text, source_id, max_concepts=QUIZ_MAX_CONCEPTS):
     """بتحلل المحتوى وتستخرج المفاهيم الأساسية"""
 
     if not pdf_text or len(pdf_text.strip()) < 100:
@@ -345,8 +374,8 @@ def get_difficulty_label(difficulty_score):
         return "hard"
 
 
-def generate_questions(concepts, pdf_text, source_id, concept_map, questions_per_concept=3):
-    """بتولّد أسئلة من المفاهيم"""
+def generate_questions(concepts, pdf_text, source_id, concept_map, questions_per_concept=QUIZ_QUESTIONS_PER_CONCEPT):
+    """بتولّد أسئلة من المفاهيم (على دفعات)"""
 
     if not concepts:
         print("⚠️ مفيش مفاهيم")
@@ -355,6 +384,7 @@ def generate_questions(concepts, pdf_text, source_id, concept_map, questions_per
     if len(pdf_text) > 15000:
         pdf_text = pdf_text[:15000] + "..."
 
+    # جهز قائمة المفاهيم
     concepts_list = []
     for c in concepts:
         if not isinstance(c, dict):
@@ -368,10 +398,23 @@ def generate_questions(concepts, pdf_text, source_id, concept_map, questions_per
                 f"- {name} (importance: {importance}, difficulty: {difficulty}): {desc}"
             )
 
-    concepts_text = "\n".join(concepts_list)
-    total_questions = len(concepts) * questions_per_concept
+    all_questions = []
 
-    prompt = f"""إنت مولّد أسئلة تعليمية محترف. ولّد أسئلة اختيارات (MCQ) من المحتوى ده.
+    # ⚠️ نعمل الأسئلة على دفعات (كل دفعة 3 مفاهيم)
+    batch_size = 3
+    total_batches = (len(concepts) + batch_size - 1) // batch_size
+
+    for batch_idx in range(total_batches):
+        start = batch_idx * batch_size
+        end = start + batch_size
+        batch_concepts = concepts[start:end]
+
+        batch_concepts_text = "\n".join(concepts_list[start:end])
+        batch_questions_count = len(batch_concepts) * questions_per_concept
+
+        print(f"  📝 دفعة {batch_idx + 1}/{total_batches}: {len(batch_concepts)} مفهوم → {batch_questions_count} سؤال")
+
+        prompt = f"""إنت مولّد أسئلة تعليمية محترف. ولّد أسئلة اختيارات (MCQ) من المحتوى ده.
 
 📄 المحتوى:
 {pdf_text}
@@ -379,85 +422,73 @@ def generate_questions(concepts, pdf_text, source_id, concept_map, questions_per
 ━━━━━━━━━━━━━━━
 
 📚 المفاهيم:
-{concepts_text}
+{batch_concepts_text}
 
 ━━━━━━━━━━━━━━━
 
 🎯 المطلوب:
 - ولّد {questions_per_concept} أسئلة لكل مفهوم
-- إجمالي: {total_questions} سؤال
+- إجمالي: {batch_questions_count} سؤال
 
 ⚠️ كل سؤال يكون فيه:
 - concept: اسم المفهوم (بالظبط زي ما هو فوق)
-- question: نص السؤال (واضح، بدون غموض)
+- question: نص السؤال
 - options: 4 اختيارات (A, B, C, D)
 - correct_answer: الإجابة الصحيحة (A / B / C / D)
 - explanation: شرح ليه الإجابة صح
 - bloom_level: مستوى التفكير
-  * "remember" = تذكر (تعريفات)
-  * "understand" = فهم (شرح)
-  * "apply" = تطبيق (استخدام)
-  * "analyze" = تحليل (مقارنة)
-  * "evaluate" = تقييم (حكم)
-  * "create" = إبداع (تصميم)
 - misconception_map: لكل اختيار خاطئ، إيه الفهم الغلط
-  * مثال: {{"B": "Confuses X with Y", "C": "Assumes Z"}}
 
 ⚠️ مهم جداً:
-- الأسئلة تكون من المحتوى، مش من بره
-- الإجابة الصحيحة تكون واحدة بس
-- الاختيارات الخاطئة تكون معقولة (مش سخيفة)
-- متنوع المستويات (سهل، متوسط، صعب)
+- الأسئلة من المحتوى
+- الإجابة الصحيحة واحدة بس
 - متعملش أسئلة مكررة
 
-⚠️ رد بـ JSON فقط:
+⚠️ رد بـ JSON فقط (لازم يكون JSON صالح):
 
 {{
   "questions": [
     {{
-      "concept": "Recursion",
-      "question": "What is recursion?",
-      "options": {{
-        "A": "A function that calls itself",
-        "B": "A loop",
-        "C": "A variable",
-        "D": "A type of array"
-      }},
+      "concept": "...",
+      "question": "...",
+      "options": {{"A": "...", "B": "...", "C": "...", "D": "..."}},
       "correct_answer": "A",
-      "explanation": "Recursion is when a function calls itself.",
+      "explanation": "...",
       "bloom_level": "remember",
-      "misconception_map": {{
-        "B": "Confuses recursion with loops",
-        "C": "Confuses function with variable",
-        "D": "Confuses function with data structure"
-      }}
+      "misconception_map": {{"B": "...", "C": "...", "D": "..."}}
     }}
   ]
 }}"""
 
-    print(f"📝 جاري توليد الأسئلة ({total_questions} سؤال)...")
-    response = ai_generate(prompt, max_tokens=8000, json_mode=True)
+        try:
+            response = ai_generate(prompt, max_tokens=6000, json_mode=True)
 
-    if not response:
-        print("❌ فشل توليد الأسئلة")
-        return []
+            if not response:
+                print(f"  ⚠️ دفعة {batch_idx + 1} فشلت (مفيش رد)")
+                continue
 
-    data = extract_json(response)
-    if not data or "questions" not in data:
-        print("❌ فشل قراءة JSON")
-        return []
+            data = extract_json(response)
+            if not data or "questions" not in data:
+                print(f"  ⚠️ دفعة {batch_idx + 1} فشلت (JSON غلط)")
+                continue
 
-    questions = data["questions"]
+            batch_questions = data["questions"]
 
-    if not isinstance(questions, list):
-        print("❌ الـ questions مش list")
-        return []
+            if not isinstance(batch_questions, list):
+                print(f"  ⚠️ دفعة {batch_idx + 1} فشلت (مش list)")
+                continue
 
-    # ✅ فلترة: نخلي بس dicts
-    questions = [q for q in questions if isinstance(q, dict)]
+            batch_questions = [q for q in batch_questions if isinstance(q, dict)]
+            all_questions.extend(batch_questions)
 
-    print(f"✅ تم توليد {len(questions)} سؤال (صالح)")
-    return questions
+            print(f"  ✅ دفعة {batch_idx + 1}: {len(batch_questions)} سؤال")
+
+        except Exception as e:
+            print(f"  ❌ دفعة {batch_idx + 1} فشلت: {e}")
+            continue
+
+    print(f"✅ تم توليد {len(all_questions)} سؤال (إجمالي)")
+    return all_questions
 
 
 # ============================================
@@ -513,8 +544,8 @@ def save_questions_to_db(source_id, questions, concepts, concept_map, pdf_text):
             print(f"  ⚠️ سؤال {i}: الإجابة الصحيحة مش في الاختيارات")
             continue
 
-        if len(options) < 4:
-            print(f"  ⚠️ سؤال {i}: الاختيارات أقل من 4")
+        if len(options) < QUIZ_MIN_OPTIONS:
+            print(f"  ⚠️ سؤال {i}: الاختيارات أقل من {QUIZ_MIN_OPTIONS}")
             continue
 
         concept_diff = concept_difficulty.get(concept_name, 0.5)
@@ -549,11 +580,16 @@ def save_questions_to_db(source_id, questions, concepts, concept_map, pdf_text):
 
 
 # ============================================
-#   4. validate_question — التحقق من السؤال
+#   4. validate_question — التحقق من السؤال (7 checks)
 # ============================================
 
-def validate_question(question, pdf_text, concept_name=None):
-    """بتتحقق من صحة السؤال (Deterministic Checks)"""
+def validate_question(question, pdf_text=None, concept_name=None, source_id=None):
+    """
+    بتتحقق من صحة السؤال (7 checks جديدة)
+    
+    المخرجات:
+        tuple: (is_valid, reason)
+    """
 
     # تأكد إن question هي dict
     if not isinstance(question, dict):
@@ -579,66 +615,73 @@ def validate_question(question, pdf_text, concept_name=None):
     explanation = explanation.strip()
 
     # ===== Check 1: السؤال مش فاضي =====
-    if not question_text or len(question_text) < 10:
-        return False, "السؤال قصير جداً أو فاضي"
+    if not question_text or len(question_text) < QUIZ_MIN_QUESTION_LENGTH:
+        return False, f"السؤال قصير جداً (أقل من {QUIZ_MIN_QUESTION_LENGTH})"
 
-    # ===== Check 2: 4 اختيارات بالظبط =====
-    if len(options) != 4:
-        return False, f"عدد الاختيارات {len(options)} مش 4"
+    # ===== Check 2: عدد الاختيارات مناسب =====
+    if len(options) < QUIZ_MIN_OPTIONS:
+        return False, f"عدد الاختيارات {len(options)} أقل من {QUIZ_MIN_OPTIONS}"
+    
+    if len(options) > QUIZ_MAX_OPTIONS:
+        return False, f"عدد الاختيارات {len(options)} أكبر من {QUIZ_MAX_OPTIONS}"
 
-    # ===== Check 3: الإجابة الصحيحة موجودة =====
-    if correct_answer not in options:
-        return False, f"الإجابة الصحيحة '{correct_answer}' مش في الاختيارات"
-
-    # ===== Check 4: الاختيارات مش فاضية =====
-    for key, value in options.items():
-        if not value or len(str(value).strip()) < 2:
-            return False, f"الاختيار {key} فاضي أو قصير جداً"
-
-    # ===== Check 5: مفيش اختيارات مكررة =====
+    # ===== Check 3: مفيش اختيارات مكررة =====
     option_values = [str(v).strip().lower() for v in options.values()]
     if len(option_values) != len(set(option_values)):
         return False, "في اختيارات مكررة"
 
-    # ===== Check 6: الشرح موجود =====
-    if not explanation or len(explanation) < 10:
-        return False, "الشرح قصير جداً أو فاضي"
+    # ===== Check 4: الإجابة الصحيحة موجودة في الاختيارات =====
+    if correct_answer not in options:
+        return False, f"الإجابة الصحيحة '{correct_answer}' مش في الاختيارات"
 
-    # ===== Check 7: الاختيارات معقولة =====
-    suspicious_words = ["banana", "موز", "mahmoud", "windows 95", "hello world"]
-    for value in options.values():
-        value_lower = str(value).lower()
-        for word in suspicious_words:
-            if word in value_lower:
-                return False, f"اختيار فيه كلمة مش منطقية: {word}"
+    # ===== Check 5: الشرح موجود =====
+    if not explanation or len(explanation) < QUIZ_MIN_EXPLANATION_LENGTH:
+        return False, f"الشرح قصير جداً (أقل من {QUIZ_MIN_EXPLANATION_LENGTH})"
 
-    # ===== Check 8: السؤال فيه علامة استفهام =====
-    if "?" not in question_text and "؟" not in question_text:
-        return False, "السؤال مش فيه علامة استفهام"
+    # ===== Check 6: السؤال مرتبط بالمصدر (لو اتبعت) =====
+    if source_id:
+        q_source = question.get("source_id", "")
+        if q_source and q_source != source_id:
+            return False, f"السؤال من مصدر مختلف ({q_source})"
 
-    # ===== Check 9: السؤال مش طويل جداً =====
-    if len(question_text) > 500:
-        return False, "السؤال طويل جداً (أكثر من 500 حرف)"
+    # ===== Check 7: جودة السؤال الأساسية =====
+    # 7a: مفيش placeholders
+    placeholders = ["[INSERT", "TODO", "N/A", "XXX", "...", "placeholder"]
+    for placeholder in placeholders:
+        if placeholder.lower() in question_text.lower():
+            return False, f"السؤال فيه placeholder: {placeholder}"
 
-    # ===== Check 10: الإجابة مش "all/none of the above" =====
+    # 7b: السؤال مش طويل جداً
+    if len(question_text) > QUIZ_MAX_QUESTION_LENGTH:
+        return False, f"السؤال طويل جداً (أكبر من {QUIZ_MAX_QUESTION_LENGTH})"
+
+    # 7c: الإجابة الصحيحة مش "all/none of the above"
     correct_value = str(options.get(correct_answer, "")).lower()
     if "all of the above" in correct_value or "none of the above" in correct_value:
         return False, "الإجابة الصحيحة مش المفروض تكون 'all/none of the above'"
+
+    # 7d: السؤال مش مجرد تكرار للاختيار
+    for key, value in options.items():
+        if isinstance(value, str) and question_text.lower() == value.strip().lower():
+            return False, "السؤال نفس نص أحد الاختيارات"
 
     # ✅ السؤال صالح
     return True, "OK"
 
 
-def validate_questions_batch(questions, pdf_text, concepts):
+def validate_questions_batch(questions, pdf_text, concepts, source_id=None):
     """بتحقق من مجموعة أسئلة"""
 
     valid = []
     rejected = 0
+    rejected_reasons = {}
 
     for i, q in enumerate(questions, 1):
         if not isinstance(q, dict):
             rejected += 1
-            print(f"  ❌ سؤال {i} اترفض: مش dict (نوعه: {type(q).__name__})")
+            reason = f"مش dict (نوعه: {type(q).__name__})"
+            rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
+            print(f"  ❌ سؤال {i} اترفض: {reason}")
             continue
 
         concept_name = q.get("concept", "")
@@ -646,15 +689,22 @@ def validate_questions_batch(questions, pdf_text, concepts):
             concept_name = ""
         concept_name = concept_name.strip()
 
-        is_valid, reason = validate_question(q, pdf_text, concept_name)
+        is_valid, reason = validate_question(q, pdf_text, concept_name, source_id)
 
         if is_valid:
             valid.append(q)
         else:
             rejected += 1
+            rejected_reasons[reason] = rejected_reasons.get(reason, 0) + 1
             print(f"  ❌ سؤال {i} اترفض: {reason}")
 
     print(f"\n📊 Validation: {len(valid)} صالح، {rejected} مرفوض")
+
+    if rejected_reasons:
+        print(f"📋 أسباب الرفض:")
+        for reason, count in rejected_reasons.items():
+            print(f"   • {reason}: {count}")
+
     return valid, rejected
 
 
@@ -662,7 +712,7 @@ def validate_questions_batch(questions, pdf_text, concepts):
 #   5. generate_question_bank — Pipeline الكامل
 # ============================================
 
-def generate_question_bank(pdf_text, source_id, max_concepts=15, questions_per_concept=3):
+def generate_question_bank(pdf_text, source_id, max_concepts=QUIZ_MAX_CONCEPTS, questions_per_concept=QUIZ_QUESTIONS_PER_CONCEPT):
     """Pipeline الكامل لتوليد بنك أسئلة"""
 
     print(f"\n{'='*60}")
@@ -675,6 +725,7 @@ def generate_question_bank(pdf_text, source_id, max_concepts=15, questions_per_c
         "concepts_count": 0,
         "relationships_count": 0,
         "questions_count": 0,
+        "rejected_count": 0,
         "source_id": source_id,
     }
 
@@ -714,7 +765,10 @@ def generate_question_bank(pdf_text, source_id, max_concepts=15, questions_per_c
 
     # ===== الخطوة 5: التحقق =====
     print("\n📌 الخطوة 5: التحقق من الأسئلة")
-    valid_questions, rejected = validate_questions_batch(questions, pdf_text, concepts)
+    valid_questions, rejected = validate_questions_batch(
+        questions, pdf_text, concepts, source_id=source_id
+    )
+    result["rejected_count"] = rejected
 
     if not valid_questions:
         print("❌ كل الأسئلة مرفوضة — توقف")
@@ -735,6 +789,7 @@ def generate_question_bank(pdf_text, source_id, max_concepts=15, questions_per_c
     print(f"   📚 مفاهيم: {result['concepts_count']}")
     print(f"   🔗 علاقات: {result['relationships_count']}")
     print(f"   📝 أسئلة: {result['questions_count']}")
+    print(f"   ❌ مرفوض: {result['rejected_count']}")
     print(f"{'='*60}\n")
 
     return result

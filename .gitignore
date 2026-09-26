@@ -13,3 +13,10 @@ venv/
 env/
 error.txt
 benchmark/
+# V2 Database
+users_v2.db
+*.db
+
+# Test outputs
+test_output.txt
+bot_output.txt|

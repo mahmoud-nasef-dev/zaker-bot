@@ -8,14 +8,13 @@ from telegram import (
 def main_menu(is_admin=False):
     """القائمة الأساسية - بتفرق بين Admin والمستخدم العادي"""
     keyboard = [
-        [KeyboardButton("📄 تحليل PDF"), KeyboardButton("📸 صورة")],
-        [KeyboardButton("🎯 كويز"), KeyboardButton("📚 شرح")],
-        [KeyboardButton("🌍 ترجمة"), KeyboardButton("📝 تلخيص")],
-        [KeyboardButton("💎 نقاطي"), KeyboardButton("🎁 هدية يومية")],
-        [KeyboardButton("🏆 المتصدرين"), KeyboardButton("👥 دعوة أصدقاء")],
-        [KeyboardButton("📚 موادي"), KeyboardButton("🧠 حللني")],
-        [KeyboardButton("📊 خطتي"), KeyboardButton("⏱️ ذاكر معايا")],
-        [KeyboardButton("🏆 إنجازاتي")],
+        [KeyboardButton("📄 تحليل PDF"), KeyboardButton("🎯 كويز ذكي")],
+        [KeyboardButton("📚 شرح"), KeyboardButton("🌍 ترجمة")],
+        [KeyboardButton("📝 تلخيص"), KeyboardButton("💎 نقاطي")],
+        [KeyboardButton("🎁 هدية يومية"), KeyboardButton("🏆 المتصدرين")],
+        [KeyboardButton("👥 دعوة أصدقاء"), KeyboardButton("📚 موادي")],
+        [KeyboardButton("🧠 حللني"), KeyboardButton("📊 خطتي")],
+        [KeyboardButton("⏱️ ذاكر معايا"), KeyboardButton("🏆 إنجازاتي")],
     ]
 
     if is_admin:
@@ -70,7 +69,7 @@ def pdf_menu():
 
 
 def quiz_menu():
-    """قائمة الكويز"""
+    """قائمة الكويز (القديمة - للتوافق)"""
     keyboard = [
         [InlineKeyboardButton("📄 كويز من PDF", callback_data="quiz_from_pdf")],
         [InlineKeyboardButton("🎲 كويز عشوائي", callback_data="quiz_random")],
@@ -364,11 +363,11 @@ def pomodoro_done_menu():
 
 
 # ============================================
-# ===== أزرار v1.1 - Pagination (جديد) =====
+# ===== أزرار v1.1 - Pagination =====
 # ============================================
 
 def quick_actions_menu():
-    """قائمة الـ Quick Actions بعد رفع PDF (v1.1)"""
+    """قائمة الـ Quick Actions بعد رفع PDF"""
     keyboard = [
         [InlineKeyboardButton("⚡ ملخص سريع (10 ثواني)", callback_data="quick_summary")],
         [InlineKeyboardButton("📚 شرح تفصيلي (فصول)", callback_data="full_explanation")],
@@ -381,7 +380,7 @@ def quick_actions_menu():
 
 
 def chapters_menu(chapters):
-    """قائمة الفصول (v1.1)"""
+    """قائمة الفصول"""
     keyboard = []
 
     for i, chapter in enumerate(chapters):
@@ -401,7 +400,7 @@ def chapters_menu(chapters):
 
 
 def chapter_nav_menu(chapter_idx, part_idx, total_parts):
-    """أزرار التنقل بين الأجزاء (v1.1)"""
+    """أزرار التنقل بين الأجزاء"""
     keyboard = []
     nav_row = []
 
@@ -426,7 +425,7 @@ def chapter_nav_menu(chapter_idx, part_idx, total_parts):
 
 
 def chapter_options_menu():
-    """قائمة بعد عرض فصل (v1.1)"""
+    """قائمة بعد عرض فصل"""
     keyboard = [
         [InlineKeyboardButton("💡 اشرح الفصل كامل", callback_data="explain_full_chapter")],
         [InlineKeyboardButton("📌 اشرح جزء جزء", callback_data="explain_part_by_part")],
@@ -442,5 +441,114 @@ def back_to_chapters_menu():
     keyboard = [
         [InlineKeyboardButton("📋 فهرس الفصول", callback_data="show_chapters")],
         [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back_home")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+# ============================================
+# ===== أزرار V2 - Quiz Engine (جديد) =====
+# ============================================
+
+def smart_quiz_menu():
+    """قائمة الكويز الذكي (V2)"""
+    keyboard = [
+        [InlineKeyboardButton("📚 كويز على المحاضرة", callback_data="smart_quiz_lecture")],
+        [InlineKeyboardButton("🎯 كويز على نقاط ضعفي", callback_data="smart_quiz_weak")],
+        [InlineKeyboardButton("❌ مراجعة أخطائي", callback_data="smart_quiz_mistakes")],
+        [InlineKeyboardButton("🎲 الكويز اليومي", callback_data="smart_quiz_daily")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def quiz_count_menu(mode):
+    """اختيار عدد الأسئلة (V2)"""
+    keyboard = [
+        [InlineKeyboardButton("5 أسئلة (سريع)", callback_data=f"quiz_count_5_{mode}")],
+        [InlineKeyboardButton("10 أسئلة (متوسط)", callback_data=f"quiz_count_10_{mode}")],
+        [InlineKeyboardButton("15 أسئلة (كامل)", callback_data=f"quiz_count_15_{mode}")],
+        [InlineKeyboardButton("20 أسئلة (مكثف)", callback_data=f"quiz_count_20_{mode}")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="smart_quiz_back")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def quiz_difficulty_menu(count, mode):
+    """اختيار صعوبة الأسئلة (V2)"""
+    keyboard = [
+        [InlineKeyboardButton("🟢 سهل", callback_data=f"quiz_diff_easy_{count}_{mode}")],
+        [InlineKeyboardButton("🟡 متوسط", callback_data=f"quiz_diff_medium_{count}_{mode}")],
+        [InlineKeyboardButton("🔴 صعب", callback_data=f"quiz_diff_hard_{count}_{mode}")],
+        [InlineKeyboardButton("🧠 تكيفي (موصى به)", callback_data=f"quiz_diff_adaptive_{count}_{mode}")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="smart_quiz_back")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def quiz_question_menu(question_num, total):
+    """أزرار الإجابة على السؤال (A/B/C/D) (V2)"""
+    keyboard = [
+        [InlineKeyboardButton("A", callback_data="quiz_ans_A")],
+        [InlineKeyboardButton("B", callback_data="quiz_ans_B")],
+        [InlineKeyboardButton("C", callback_data="quiz_ans_C")],
+        [InlineKeyboardButton("D", callback_data="quiz_ans_D")],
+        [InlineKeyboardButton("⏭️ تخطي السؤال", callback_data="quiz_skip")],
+        [InlineKeyboardButton("🛑 إنهاء الكويز", callback_data="quiz_finish")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def quiz_after_answer_menu(is_correct, has_misconception=False):
+    """أزرار بعد الإجابة (V2)"""
+    keyboard = []
+
+    if not is_correct and has_misconception:
+        keyboard.append([
+            InlineKeyboardButton("💡 فهمني غلطتي", callback_data="quiz_explain_mistake")
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton("➡️ السؤال التالي", callback_data="quiz_next_question")
+    ])
+    keyboard.append([
+        InlineKeyboardButton("🛑 إنهاء الكويز", callback_data="quiz_finish")
+    ])
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+def quiz_result_menu():
+    """قائمة بعد انتهاء الكويز (V2)"""
+    keyboard = [
+        [InlineKeyboardButton("🔄 كويز تاني", callback_data="smart_quiz_restart")],
+        [InlineKeyboardButton("📚 اشرحلي نقاط ضعفي", callback_data="quiz_explain_weak")],
+        [InlineKeyboardButton("🎯 كويز على نقاط ضعفي", callback_data="smart_quiz_weak")],
+        [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="back_home")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def quiz_mistake_explanation_menu(question_num):
+    """أزرار شرح الغلطة (V2)"""
+    keyboard = [
+        [InlineKeyboardButton("➡️ السؤال التالي", callback_data="quiz_next_question")],
+        [InlineKeyboardButton("🛑 إنهاء الكويز", callback_data="quiz_finish")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def quiz_no_source_menu():
+    """لما المستخدم يبدأ كويز ومفيش مصدر"""
+    keyboard = [
+        [InlineKeyboardButton("📄 ارفع ملف PDF الأول", callback_data="upload_pdf")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="back_home")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def quiz_processing_menu():
+    """أثناء تجهيز بنك الأسئلة (V2)"""
+    keyboard = [
+        [InlineKeyboardButton("🛑 إلغاء", callback_data="quiz_cancel")],
     ]
     return InlineKeyboardMarkup(keyboard)
