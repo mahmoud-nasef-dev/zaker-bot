@@ -669,6 +669,9 @@ def init_db():
     conn.commit()
     cursor.close()
     release_connection(conn)
+        
+    # ===== تشغيل Migrations =====
+    run_migrations()
     
 
 # ============================================
@@ -2696,3 +2699,191 @@ def resolve_mistake_review(review_id):
     finally:
         cursor.close()
         release_connection(conn)
+        
+
+# ============================================
+# ===== Migration System (V2) =====
+# ============================================
+
+def get_schema_version():
+    """
+    بترجع آخر migration اتطبق.
+    لو مفيش، ترجع 0.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # نتأكد إن جدول الـ migrations موجود
+        if USE_POSTGRES:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    applied_at TEXT NOT NULL
+                )
+            """)
+        else:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    applied_at TEXT NOT NULL
+                )
+            """)
+        conn.commit()
+        
+        # نجيب آخر migration اتطبق
+        cursor.execute("SELECT name FROM schema_migrations ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+        
+        if not row:
+            return 0
+        
+        # نستخرج الرقم من الاسم (001_xxx → 1)
+        last_name = row[0]
+        version = int(last_name.split("_")[0])
+        return version
+        
+    except Exception as e:
+        print(f"⚠️ خطأ في get_schema_version: {e}")
+        return 0
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def apply_migration(migration_file):
+    """
+    بيطبق migration واحد.
+    - يقرا الملف
+    - ينفذ كل جملة SQL فيه
+    - يسجل إنه اتنفذ
+    """
+    migration_path = os.path.join("migrations", migration_file)
+    
+    if not os.path.exists(migration_path):
+        print(f"⚠️ الملف مش موجود: {migration_path}")
+        return False
+    
+    print(f"  🔄 جاري تطبيق: {migration_file}")
+    
+    # نقرا الملف
+    with open(migration_path, "r", encoding="utf-8") as f:
+        sql_content = f.read().strip()
+    
+    # لو الملف فاضي، نسجله وخلاص
+    if not sql_content:
+        print(f"  ℹ️ الملف فاضي، بنسجله وخلاص")
+        return _record_migration(migration_file)
+    
+    # نقسم على ; (نقطة فاصلة)
+    statements = [s.strip() for s in sql_content.split(";") if s.strip()]
+    
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    try:
+        for stmt in statements:
+            # نتجاهل التعليقات
+            if stmt.startswith("--"):
+                continue
+            
+            # ننفذ الجملة
+            cursor.execute(stmt)
+        
+        conn.commit()
+        
+        # نسجل الـ migration
+        _record_migration_with_conn(cursor, migration_file)
+        conn.commit()
+        
+        print(f"  ✅ تم تطبيق: {migration_file}")
+        return True
+        
+    except Exception as e:
+        print(f"  ❌ فشل تطبيق {migration_file}: {e}")
+        conn.rollback()
+        return False
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def _record_migration(migration_file):
+    """تسجيل migration (بدون connection موجود)"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    try:
+        _record_migration_with_conn(cursor, migration_file)
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"⚠️ فشل تسجيل migration: {e}")
+        conn.rollback()
+        return False
+    finally:
+        cursor.close()
+        release_connection(conn)
+
+
+def _record_migration_with_conn(cursor, migration_file):
+    """تسجيل migration (بـ cursor موجود)"""
+    from datetime import datetime as dt
+    ph = placeholder()
+    
+    now = dt.now().strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute(
+        f"INSERT INTO schema_migrations (name, applied_at) VALUES ({ph}, {ph})",
+        (migration_file, now)
+    )
+
+
+def run_migrations():
+    """
+    بيشغل كل الـ migrations اللي لسه ما اتنفذتش.
+    - يقرا فولدر migrations/
+    - يرتب الملفات
+    - يشغل اللي لسه ما اتنفذش
+    """
+    if not os.path.exists("migrations"):
+        print("⚠️ فولدر migrations مش موجود")
+        return
+    
+    # نجيب كل ملفات .sql
+    files = sorted([
+        f for f in os.listdir("migrations")
+        if f.endswith(".sql")
+    ])
+    
+    if not files:
+        print("ℹ️ مفيش migrations")
+        return
+    
+    # نجيب آخر version
+    current_version = get_schema_version()
+    print(f"📌 آخر migration: {current_version}")
+    
+    # نشغل اللي لسه
+    applied_count = 0
+    for migration_file in files:
+        # نستخرج الرقم
+        try:
+            version = int(migration_file.split("_")[0])
+        except ValueError:
+            print(f"⚠️ اسم ملف غلط: {migration_file}")
+            continue
+        
+        # لو اتنفذ قبل كده، نتخطاه
+        if version <= current_version:
+            continue
+        
+        # نطبقه
+        if apply_migration(migration_file):
+            applied_count += 1
+    
+    if applied_count == 0:
+        print("✅ كل الـ migrations مطبقة")
+    else:
+        print(f"✅ تم تطبيق {applied_count} migration جديد")
