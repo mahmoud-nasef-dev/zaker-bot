@@ -600,6 +600,73 @@ def init_db():
         """)
 
     conn.commit()
+        # ============================================
+    # ===== WAL Mode (للـ SQLite بس) =====
+    # ============================================
+    if not USE_POSTGRES:
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA foreign_keys=ON")
+            print("✅ WAL Mode مفعّل")
+        except Exception as e:
+            print(f"⚠️ فشل تفعيل WAL: {e}")
+
+    # ============================================
+    # ===== Indexes للأداء =====
+    # ============================================
+    indexes = [
+        # V2 - Quiz Engine
+        "CREATE INDEX IF NOT EXISTS idx_quiz_attempts_user ON quiz_attempts(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_quiz_attempts_session ON quiz_attempts(session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_quiz_attempts_concept ON quiz_attempts(concept_id)",
+        "CREATE INDEX IF NOT EXISTS idx_quiz_sessions_user ON quiz_sessions(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_quiz_sessions_status ON quiz_sessions(status)",
+        
+        # V2 - Question Bank
+        "CREATE INDEX IF NOT EXISTS idx_questions_source ON questions(source_id)",
+        "CREATE INDEX IF NOT EXISTS idx_questions_concept ON questions(concept_id)",
+        "CREATE INDEX IF NOT EXISTS idx_questions_difficulty ON questions(difficulty)",
+        "CREATE INDEX IF NOT EXISTS idx_concepts_source ON concepts(source_id)",
+        "CREATE INDEX IF NOT EXISTS idx_concept_relationships_source ON concept_relationships(source_id)",
+        
+        # V2 - Knowledge States
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_user ON knowledge_states(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_concept ON knowledge_states(concept_id)",
+        
+        # V2 - Misconceptions
+        "CREATE INDEX IF NOT EXISTS idx_misconceptions_user ON misconceptions(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_misconceptions_concept ON misconceptions(concept_id)",
+        
+        # V2 - Mistake Reviews
+        "CREATE INDEX IF NOT EXISTS idx_mistakes_user ON mistake_reviews(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_mistakes_status ON mistake_reviews(review_status)",
+        "CREATE INDEX IF NOT EXISTS idx_mistakes_next_review ON mistake_reviews(next_review_at)",
+        
+        # V2 - Analytics
+        "CREATE INDEX IF NOT EXISTS idx_events_user ON activity_events(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_events_type ON activity_events(event_type)",
+        "CREATE INDEX IF NOT EXISTS idx_events_timestamp ON activity_events(timestamp)",
+        
+        # V1 - Tables
+        "CREATE INDEX IF NOT EXISTS idx_users_plan ON users(plan)",
+        "CREATE INDEX IF NOT EXISTS idx_users_points ON users(points)",
+        "CREATE INDEX IF NOT EXISTS idx_users_last_used ON users(last_used)",
+        "CREATE INDEX IF NOT EXISTS idx_subjects_user ON user_subjects(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_pomodoro_user ON pomodoro_sessions(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_pdf_analyses_user ON pdf_analyses(user_id)",
+    ]
+
+    created_count = 0
+    for idx_query in indexes:
+        try:
+            cursor.execute(idx_query)
+            created_count += 1
+        except Exception as e:
+            print(f"⚠️ فشل إنشاء index: {e}")
+
+    print(f"✅ تم إنشاء/التحقق من {created_count} index")
+    conn.commit()
     cursor.close()
     release_connection(conn)
     
