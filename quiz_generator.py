@@ -536,9 +536,36 @@ def save_questions_to_db(source_id, questions, concepts, concept_map, pdf_text):
         bloom_level = q.get("bloom_level", "understand")
         misconception_map = q.get("misconception_map", {})
 
-        if concept_name not in concept_map:
+                # ===== البحث عن المفهوم (ذكي) =====
+        matched_name = None
+
+        # المحاولة 1: بحث مباشر
+        if concept_name in concept_map:
+            matched_name = concept_name
+        else:
+            # المحاولة 2: بحث جزئي (لو اسم Groq جزء من اسم DB)
+            for db_name in concept_map.keys():
+                if concept_name in db_name or db_name in concept_name:
+                    matched_name = db_name
+                    print(f"  🔗 سؤال {i}: '{concept_name}' → '{db_name}' (بحث جزئي)")
+                    break
+
+            # المحاولة 3: بحث بأول كلمة (لو المحاولة 2 فشلت)
+            if not matched_name and concept_name:
+                first_word = concept_name.split()[0] if concept_name.split() else ""
+                if len(first_word) > 3:  # نتجنب الكلمات القصيرة
+                    for db_name in concept_map.keys():
+                        if first_word in db_name:
+                            matched_name = db_name
+                            print(f"  🔗 سؤال {i}: '{concept_name}' → '{db_name}' (أول كلمة)")
+                            break
+
+        if not matched_name:
             print(f"  ⚠️ سؤال {i}: المفهوم '{concept_name}' مش موجود")
             continue
+
+        # نستخدم الاسم المطابق
+        concept_name = matched_name
 
         if correct_answer not in options:
             print(f"  ⚠️ سؤال {i}: الإجابة الصحيحة مش في الاختيارات")
