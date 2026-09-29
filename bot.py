@@ -1,3 +1,8 @@
+# ============================================
+#   ذاكر - Bot v2.0.0-dev
+#   V2 - Quiz Engine
+# ============================================
+
 import os
 import sys
 import io
@@ -44,7 +49,8 @@ from database import (
     save_pdf_analysis, get_pdf_analysis, has_pdf_analysis,
     clear_pdf_analysis,
     log_event, get_user_events, count_events_today,
-    get_questions_by_source, get_question_by_id, count_questions_by_source,
+    get_questions_by_source, get_questions_by_concepts,
+    get_question_by_id, count_questions_by_source,
     get_concept_by_id,
     create_quiz_session, get_quiz_session, update_quiz_session,
     save_quiz_attempt, get_session_attempts, get_user_quiz_stats,
@@ -417,6 +423,7 @@ def generate_quick_summary(pdf_text, user_college=None, user_subjects=None):
     return ai_generate(prompt, max_tokens=1500)
 
 
+
 def generate_chapters(pdf_text, user_college=None, user_subjects=None, learning_style=None):
     """يقسم المحتوى لفصول وأجزاء — مع chunks"""
     context = ""
@@ -769,6 +776,7 @@ async def send_welcome(update_or_message, user, is_edit=False):
             reply_markup=main_menu(is_admin=is_admin)
         )
 
+        
 
 # ============================================
 # ===== الأوامر =====
@@ -995,7 +1003,7 @@ async def analysis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await update.message.reply_text(text, reply_markup=analysis_result_menu())
-
+    
 
 # ===== معالجة أزرار التحليل =====
 async def handle_analysis_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1552,7 +1560,193 @@ async def handle_plan_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
             await safe_edit(query, plan_text[:4000])
             await query.message.reply_text(plan_text[4000:], reply_markup=plan_menu())
         return
+    
 
+# ===== عرض أسئلة التحليل =====
+async def show_next_question(query, context, step):
+    user = query.from_user
+
+    questions = {
+        1: ("⏰ *إنت بتذاكر إمتى؟*", analysis_q1_time()),
+        2: ("⏱️ *بتقدر تركز كام دقيقة؟*", analysis_q2_duration()),
+        3: ("🧠 *بتفهم إزاي أكتر؟*", analysis_q3_style()),
+        5: ("🎯 *هدفك من المذاكرة؟*", analysis_q5_goal()),
+        6: ("📅 *امتحاناتك إمتى؟*", analysis_q6_exams()),
+    }
+
+    if step == 4:
+        subjects = get_user_subjects(user.id)
+        text = "😰 *إيه أصعب مادة عليك؟*"
+        markup = analysis_q4_hard_subject(subjects)
+        await safe_edit(query, f"📊 *سؤال 4 من 6*\n\n{text}\n\n━━━━━━━━━━━━━━━", reply_markup=markup)
+        return
+
+    if step > 6:
+        await finish_analysis(query, context, user)
+        return
+
+    if step in questions:
+        question_text, markup = questions[step]
+        await safe_edit(
+            query,
+            f"📊 *سؤال {step} من 6*\n\n{question_text}\n\n━━━━━━━━━━━━━━━",
+            reply_markup=markup
+        )
+        return
+
+
+# ===== إنهاء التحليل =====
+async def finish_analysis(query, context, user):
+    await safe_edit(query, "⏳ *جاري تحليل إجاباتك...*")
+
+    answers = context.user_data.get("analysis_answers", {})
+
+    study_time = answers.get("q1", "skip")
+    focus_duration = answers.get("q2", "skip")
+    learning_style = answers.get("q3", "skip")
+    hard_subject = answers.get("q4", "skip")
+    goal = answers.get("q5", "skip")
+    exam_timing = answers.get("q6", "skip")
+
+    if hard_subject == "skip":
+        subjects = get_user_subjects(user.id)
+        if subjects:
+            hard_subject = subjects[0]
+
+    try:
+        prompt = f"""
+إنت "ذاكر" - مدرب دراسي.
+
+المستخدم جاوب:
+1. وقت المذاكرة: {get_subject_display(study_time)}
+2. مدة التركيز: {get_subject_display(focus_duration)}
+3. نمط التعلم: {get_subject_display(learning_style)}
+4. أصعب مادة: {hard_subject}
+5. الهدف: {get_subject_display(goal)}
+6. الامتحانات: {get_subject_display(exam_timing)}
+
+طلع تقرير بالعربي:
+
+🧠 نمطك الدراسي:
+- (وصف)
+
+⚡ نقاط قوتك:
+• (3 نقاط)
+
+⚠️ نقاط ضعفك:
+• (3 نقاط)
+
+💡 نصيحة مخصصة:
+• (2-3 نصائح)
+"""
+
+        analysis_result = ai_generate(prompt, max_tokens=1500)
+        analysis_result = clean_text(analysis_result)
+
+    except Exception as e:
+        analysis_result = "حصل خطأ في التحليل."
+        print(f"Error: {e}")
+
+    save_analysis(
+        user.id,
+        study_time, focus_duration, learning_style,
+        hard_subject, goal, exam_timing, analysis_result
+    )
+
+    add_points(user.id, POINTS_REWARDS["analysis_done"])
+    context.user_data["in_analysis"] = False
+
+    full_text = (
+        f"🎉 *تحليلك جاهز!*\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"📊 *إجاباتك:*\n\n"
+        f"🌙 وقت مذاكرتك: {get_subject_display(study_time)}\n"
+        f"⏱️ تركيزك: {get_subject_display(focus_duration)}\n"
+        f"🧠 نمط تعلمك: {get_subject_display(learning_style)}\n"
+        f"📚 أصعب مادة: {hard_subject}\n"
+        f"🎯 هدفك: {get_subject_display(goal)}\n"
+        f"📅 امتحاناتك: {get_subject_display(exam_timing)}\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"{analysis_result}\n\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"💎 *كسبت {POINTS_REWARDS['analysis_done']} نقطة!*"
+    )
+
+    if len(full_text) <= 4000:
+        await safe_edit(query, full_text, reply_markup=analysis_result_menu())
+    else:
+        await safe_edit(query, full_text[:4000])
+        await query.message.reply_text(full_text[4000:], reply_markup=analysis_result_menu())
+
+
+# ===== معالجة PDF =====
+async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    document = update.message.document
+
+    get_or_create_user(user.id, user.username, user.first_name)
+
+    log_event(user.id, "pdf_uploaded", {"file_name": document.file_name})
+
+    allowed, remaining = check_limit(user.id)
+    if not allowed:
+        await update.message.reply_text(f"⚠️ وصلت للحد اليومي!\n\n💎 تواصل مع {DEVELOPER_USERNAME}")
+        return
+
+    if not document.file_name.lower().endswith('.pdf'):
+        await update.message.reply_text("⚠️ بس ملفات PDF مسموحة.")
+        return
+
+    waiting = await update.message.reply_text("📄 جاري تحميل الملف...")
+
+    pdf_path = f"temp_{user.id}.pdf"
+
+    try:
+        file = await document.get_file()
+        await file.download_to_drive(pdf_path)
+
+        await waiting.edit_text("📖 جاري قراءة المحتوى...\n\n_لو الملف فيه صور، ممكن ياخد وقت أطول_")
+        pdf_text = process_pdf(pdf_path)
+
+        if not pdf_text.strip():
+            await waiting.edit_text(
+                "❌ الملف فاضي أو مش مقروء.\n\n"
+                "💡 *الأسباب المحتملة:*\n"
+                "• الملف تالف أو غير مدعوم\n"
+                "• الملف محمي بكلمة سر\n"
+                "• مشكلة مؤقتة في الاتصال بالـ AI\n\n"
+                "🔁 جرب ترفع الملف تاني، أو ارفع جزء منه بس."
+            )
+            if os.path.exists(pdf_path):
+                os.remove(pdf_path)
+            return
+
+        context.user_data["pdf_text"] = pdf_text
+        context.user_data["pdf_file_name"] = document.file_name
+        context.user_data["pdf_page_count"] = len(pdf_text.split("\n")) // 40
+        context.user_data["pdf_source_id"] = get_source_id_from_file(document.file_name, user.id)
+
+        clear_pdf_analysis(user.id)
+        context.user_data.pop("chapters", None)
+        context.user_data.pop("quick_summary", None)
+
+        await waiting.edit_text(
+            f"✅ *تم تحميل الملف!*\n\n"
+            f"📄 *الملف:* {document.file_name}\n"
+            f"📝 *حجم المحتوى:* {len(pdf_text)} حرف\n\n"
+            f"━━━━━━━━━━━━━━━\n\n"
+            f"🎯 *إيه اللي عايزه؟*",
+            reply_markup=quick_actions_menu()
+        )
+
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+
+    except Exception as e:
+        await waiting.edit_text(f"❌ حصل خطأ: {str(e)}")
+        if os.path.exists(pdf_path):
+            os.remove(pdf_path)
+            
 
 # ===== معالجة الأزرار العامة =====
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1785,193 +1979,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # لو مفيش أي حالة، نرجع للـ Quiz handler
     await handle_smart_quiz_buttons(update, context)
-
-
-# ===== عرض الأسئلة =====
-async def show_next_question(query, context, step):
-    user = query.from_user
-
-    questions = {
-        1: ("⏰ *إنت بتذاكر إمتى؟*", analysis_q1_time()),
-        2: ("⏱️ *بتقدر تركز كام دقيقة؟*", analysis_q2_duration()),
-        3: ("🧠 *بتفهم إزاي أكتر؟*", analysis_q3_style()),
-        5: ("🎯 *هدفك من المذاكرة؟*", analysis_q5_goal()),
-        6: ("📅 *امتحاناتك إمتى؟*", analysis_q6_exams()),
-    }
-
-    if step == 4:
-        subjects = get_user_subjects(user.id)
-        text = "😰 *إيه أصعب مادة عليك؟*"
-        markup = analysis_q4_hard_subject(subjects)
-        await safe_edit(query, f"📊 *سؤال 4 من 6*\n\n{text}\n\n━━━━━━━━━━━━━━━", reply_markup=markup)
-        return
-
-    if step > 6:
-        await finish_analysis(query, context, user)
-        return
-
-    if step in questions:
-        question_text, markup = questions[step]
-        await safe_edit(
-            query,
-            f"📊 *سؤال {step} من 6*\n\n{question_text}\n\n━━━━━━━━━━━━━━━",
-            reply_markup=markup
-        )
-        return
-
-
-# ===== إنهاء التحليل =====
-async def finish_analysis(query, context, user):
-    await safe_edit(query, "⏳ *جاري تحليل إجاباتك...*")
-
-    answers = context.user_data.get("analysis_answers", {})
-
-    study_time = answers.get("q1", "skip")
-    focus_duration = answers.get("q2", "skip")
-    learning_style = answers.get("q3", "skip")
-    hard_subject = answers.get("q4", "skip")
-    goal = answers.get("q5", "skip")
-    exam_timing = answers.get("q6", "skip")
-
-    if hard_subject == "skip":
-        subjects = get_user_subjects(user.id)
-        if subjects:
-            hard_subject = subjects[0]
-
-    try:
-        prompt = f"""
-إنت "ذاكر" - مدرب دراسي.
-
-المستخدم جاوب:
-1. وقت المذاكرة: {get_subject_display(study_time)}
-2. مدة التركيز: {get_subject_display(focus_duration)}
-3. نمط التعلم: {get_subject_display(learning_style)}
-4. أصعب مادة: {hard_subject}
-5. الهدف: {get_subject_display(goal)}
-6. الامتحانات: {get_subject_display(exam_timing)}
-
-طلع تقرير بالعربي:
-
-🧠 نمطك الدراسي:
-- (وصف)
-
-⚡ نقاط قوتك:
-• (3 نقاط)
-
-⚠️ نقاط ضعفك:
-• (3 نقاط)
-
-💡 نصيحة مخصصة:
-• (2-3 نصائح)
-"""
-
-        analysis_result = ai_generate(prompt, max_tokens=1500)
-        analysis_result = clean_text(analysis_result)
-
-    except Exception as e:
-        analysis_result = "حصل خطأ في التحليل."
-        print(f"Error: {e}")
-
-    save_analysis(
-        user.id,
-        study_time, focus_duration, learning_style,
-        hard_subject, goal, exam_timing, analysis_result
-    )
-
-    add_points(user.id, POINTS_REWARDS["analysis_done"])
-    context.user_data["in_analysis"] = False
-
-    full_text = (
-        f"🎉 *تحليلك جاهز!*\n\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"📊 *إجاباتك:*\n\n"
-        f"🌙 وقت مذاكرتك: {get_subject_display(study_time)}\n"
-        f"⏱️ تركيزك: {get_subject_display(focus_duration)}\n"
-        f"🧠 نمط تعلمك: {get_subject_display(learning_style)}\n"
-        f"📚 أصعب مادة: {hard_subject}\n"
-        f"🎯 هدفك: {get_subject_display(goal)}\n"
-        f"📅 امتحاناتك: {get_subject_display(exam_timing)}\n\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"{analysis_result}\n\n"
-        f"━━━━━━━━━━━━━━━\n\n"
-        f"💎 *كسبت {POINTS_REWARDS['analysis_done']} نقطة!*"
-    )
-
-    if len(full_text) <= 4000:
-        await safe_edit(query, full_text, reply_markup=analysis_result_menu())
-    else:
-        await safe_edit(query, full_text[:4000])
-        await query.message.reply_text(full_text[4000:], reply_markup=analysis_result_menu())
-
-
-# ===== معالجة PDF =====
-async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    document = update.message.document
-
-    get_or_create_user(user.id, user.username, user.first_name)
-
-    log_event(user.id, "pdf_uploaded", {"file_name": document.file_name})
-
-    allowed, remaining = check_limit(user.id)
-    if not allowed:
-        await update.message.reply_text(f"⚠️ وصلت للحد اليومي!\n\n💎 تواصل مع {DEVELOPER_USERNAME}")
-        return
-
-    if not document.file_name.lower().endswith('.pdf'):
-        await update.message.reply_text("⚠️ بس ملفات PDF مسموحة.")
-        return
-
-    waiting = await update.message.reply_text("📄 جاري تحميل الملف...")
-
-    pdf_path = f"temp_{user.id}.pdf"
-
-    try:
-        file = await document.get_file()
-        await file.download_to_drive(pdf_path)
-
-        await waiting.edit_text("📖 جاري قراءة المحتوى...\n\n_لو الملف فيه صور، ممكن ياخد وقت أطول_")
-        pdf_text = process_pdf(pdf_path)
-
-        if not pdf_text.strip():
-            await waiting.edit_text(
-                "❌ الملف فاضي أو مش مقروء.\n\n"
-                "💡 *الأسباب المحتملة:*\n"
-                "• الملف تالف أو غير مدعوم\n"
-                "• الملف محمي بكلمة سر\n"
-                "• مشكلة مؤقتة في الاتصال بالـ AI\n\n"
-                "🔁 جرب ترفع الملف تاني، أو ارفع جزء منه بس."
-            )
-            if os.path.exists(pdf_path):
-                os.remove(pdf_path)
-            return
-
-        context.user_data["pdf_text"] = pdf_text
-        context.user_data["pdf_file_name"] = document.file_name
-        context.user_data["pdf_page_count"] = len(pdf_text.split("\n")) // 40
-        context.user_data["pdf_source_id"] = get_source_id_from_file(document.file_name, user.id)
-
-        clear_pdf_analysis(user.id)
-        context.user_data.pop("chapters", None)
-        context.user_data.pop("quick_summary", None)
-
-        await waiting.edit_text(
-            f"✅ *تم تحميل الملف!*\n\n"
-            f"📄 *الملف:* {document.file_name}\n"
-            f"📝 *حجم المحتوى:* {len(pdf_text)} حرف\n\n"
-            f"━━━━━━━━━━━━━━━\n\n"
-            f"🎯 *إيه اللي عايزه؟*",
-            reply_markup=quick_actions_menu()
-        )
-
-        if os.path.exists(pdf_path):
-            os.remove(pdf_path)
-
-    except Exception as e:
-        await waiting.edit_text(f"❌ حصل خطأ: {str(e)}")
-        if os.path.exists(pdf_path):
-            os.remove(pdf_path)
-
+    
 
 # ============================================
 # ===== V2 Quiz Engine =====
@@ -2060,15 +2068,51 @@ async def handle_smart_quiz_buttons(update: Update, context: ContextTypes.DEFAUL
             )
             return
 
-        text = "🎯 *نقاط ضعفك*\n\n━━━━━━━━━━━━━━━\n\n"
-        for concept_id, concept_name, mastery, confidence, attempts in weak_topics:
-            mastery_pct = int(mastery * 100) if mastery else 0
-            text += f"🔴 *{concept_name}* — {mastery_pct}%\n"
+        # ===== نجيب الـ concept_ids بتاعة نقاط الضعف =====
+        weak_concept_ids = [t[0] for t in weak_topics]
 
-        text += "\n━━━━━━━━━━━━━━━\n\n"
-        text += "🎯 _قريب: كويز مخصص على نقاط ضعفك_"
+        # ===== نجيب أسئلة من بنك الأسئلة =====
+        questions = get_questions_by_concepts(weak_concept_ids, limit=10)
 
-        await safe_edit(query, text, reply_markup=smart_quiz_menu())
+        if not questions:
+            text = "🎯 *نقاط ضعفك*\n\n━━━━━━━━━━━━━━━\n\n"
+            for concept_id, concept_name, mastery, confidence, attempts in weak_topics:
+                mastery_pct = int(mastery * 100) if mastery else 0
+                text += f"🔴 *{concept_name}* — {mastery_pct}%\n"
+
+            text += "\n━━━━━━━━━━━━━━━\n\n"
+            text += "⚠️ _مفيش أسئلة متاحة للمفاهيم دي دلوقتي_"
+
+            await safe_edit(query, text, reply_markup=smart_quiz_menu())
+            return
+
+        session_id = create_quiz_session(
+            user_id=user.id,
+            source_type="weak_points",
+            source_id=",".join(str(c) for c in weak_concept_ids),
+            mode="weak",
+            difficulty="adaptive",
+            question_count=len(questions),
+        )
+
+        if not session_id:
+            await safe_edit(query, "❌ مقدرناش نعمل الجلسة، جرب تاني.")
+            return
+
+        context.user_data["quiz_session_id"] = session_id
+        context.user_data["quiz_questions"] = questions
+        context.user_data["quiz_current_idx"] = 0
+        context.user_data["quiz_score"] = 0
+        context.user_data["quiz_started_at"] = time.time()
+        context.user_data["quiz_is_weak"] = True
+
+        log_event(user.id, "weak_quiz_started", {
+            "session_id": session_id,
+            "concepts": weak_concept_ids,
+            "questions": len(questions),
+        })
+
+        await show_quiz_question(query, context, user)
         return
 
     if data == "smart_quiz_mistakes":
@@ -2263,7 +2307,6 @@ async def show_quiz_question(query, context, user):
 
     q = questions[idx]
 
-    # q = (id, concept_id, question_text, options, correct_answer, explanation, difficulty, difficulty_score, bloom_level, misconception_map)
     question_id = q[0]
     question_text = q[2]
     options = q[3]
@@ -2319,10 +2362,8 @@ async def process_quiz_answer(query, context, user, answer):
     question_id = q[0]
     concept_id = q[1]
     question_text = q[2]
-    options = q[3]
     correct_answer = q[4]
     explanation = q[5]
-    difficulty = q[6]
 
     start_time = context.user_data.get("quiz_question_start", time.time())
     response_time = int(time.time() - start_time)
@@ -2468,9 +2509,10 @@ async def finish_quiz_session(query, context, user):
     context.user_data.pop("quiz_score", None)
     context.user_data.pop("quiz_session_id", None)
     context.user_data.pop("quiz_started_at", None)
+    context.user_data.pop("quiz_is_weak", None)
 
     await safe_edit(query, text, reply_markup=quiz_result_menu())
-
+    
 
 # ===== معالجة الرسائل النصية =====
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):

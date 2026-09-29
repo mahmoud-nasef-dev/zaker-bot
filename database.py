@@ -2022,6 +2022,49 @@ def get_questions_by_source(source_id, difficulty=None, limit=50):
     finally:
         cursor.close()
         release_connection(conn)
+        
+
+def get_questions_by_concepts(concept_ids, limit=20):
+    """
+    بترجع أسئلة من مفاهيم محددة (لنقاط الضعف).
+    
+    Args:
+        concept_ids: list من IDs المفاهيم
+        limit: أقصى عدد أسئلة
+    
+    Returns:
+        list من الأسئلة
+    """
+    if not concept_ids:
+        return []
+    
+    conn = get_connection()
+    cursor = conn.cursor()
+    ph = placeholder()
+    
+    try:
+        # نبني placeholder للـ IN clause
+        placeholders = ",".join([ph] * len(concept_ids))
+        
+        query = f"""
+            SELECT id, concept_id, question_text, options, correct_answer,
+                   explanation, difficulty, difficulty_score, bloom_level, misconception_map
+            FROM questions
+            WHERE concept_id IN ({placeholders})
+            ORDER BY difficulty_score ASC
+            LIMIT {ph}
+        """
+        
+        params = list(concept_ids) + [limit]
+        cursor.execute(query, tuple(params))
+        return cursor.fetchall()
+        
+    except Exception as e:
+        print(f"❌ خطأ في get_questions_by_concepts: {e}")
+        return []
+    finally:
+        cursor.close()
+        release_connection(conn)
 
 
 def get_question_by_id(question_id):
